@@ -667,7 +667,9 @@ V.clientes = async () => {
 async function nuevoCliente() {
   const [rutas, listas, vends] = await Promise.all([q(sb.from('rutas').select('id,nombre').order('nombre')), q(sb.from('listas_precio').select('id,nombre').order('nombre')), q(sb.from('vendedores').select('perfil_id,perfiles(nombre)'))]);
   sheet(`<h2>Nuevo cliente</h2><form onsubmit="event.preventDefault();guardarCliente()">
-  <div class="grid2"><div><label>Tipo</label><select id="c_td"><option>NIT</option><option>CC</option><option>CE</option></select></div><div><label>Número</label><input id="c_nd" required></div></div>
+  <div class="grid2"><div><label>Tipo</label><select id="c_td"><option>NIT</option><option>CC</option><option>CE</option></select></div><div><label>Número (sin dígito)</label><input id="c_nd" required inputmode="numeric" oninput="this.value=this.value.replace(/\D/g,'');calcDV()"></div></div>
+  <div class="row" style="gap:8px;margin-top:8px"><div style="width:90px"><label style="margin-top:0">DV</label><input id="c_dv" inputmode="numeric" maxlength="1"></div><button type="button" class="btn sm" style="flex:1;margin-top:22px" id="c_bus" onclick="buscarNIT()">🔎 Buscar en Cámara de Comercio</button></div>
+  <div id="c_info"></div>
   <label>Razón social o nombre</label><input id="c_rs" required><label>Nombre del negocio</label><input id="c_nc">
   <div class="grid2"><div><label>Teléfono</label><input id="c_tel" inputmode="tel"></div><div><label>Correo de facturación</label><input id="c_em" type="email"></div></div>
   <label>Dirección</label><input id="c_dir"><label>Municipio</label><input id="c_mun" value="Yopal">
@@ -678,12 +680,44 @@ async function nuevoCliente() {
   <label>Forma de pago habitual</label><select id="c_fp"><option value="contado">Contado</option><option value="credito">Crédito</option><option value="factura_contra_factura">Factura contra factura</option></select>
   <div style="height:16px"></div><button class="btn" id="c_btn">Guardar cliente</button></form>`);
 }
+function dvNIT(n) {
+  const w = [3, 7, 13, 17, 19, 23, 29, 37, 41, 43, 47, 53, 59, 67, 71], d = String(n).replace(/\D/g, '').split('').reverse();
+  if (!d.length) return '';
+  const sum = d.reduce((a, x, i) => a + (+x) * (w.at(i) || 0), 0), r = sum % 11;
+  return String(r > 1 ? 11 - r : r);
+}
+function calcDV() { if ($('#c_td').value === 'NIT') $('#c_dv').value = dvNIT($('#c_nd').value); }
+async function buscarNIT() {
+  const n = $('#c_nd').value.replace(/\D/g, ''), b = $('#c_bus'), info = $('#c_info');
+  if (n.length < 5) return toast('Escribe el número primero', true);
+  b.disabled = true; b.textContent = 'Buscando…'; info.innerHTML = '';
+  try {
+    const base = 'https://www.datos.gov.co/resource/c82u-588k.json?$limit=20&';
+    const res = await Promise.all(['nit', 'numero_identificacion'].map(k => fetch(base + k + '=' + n).then(r => r.ok ? r.json() : []).catch(() => [])));
+    const vistos = new Set(), regs = res.flat().filter(r => { const k = r.camara_comercio + r.matricula; if (vistos.has(k)) return false; vistos.add(k); return true; });
+    if (!regs.length) { info.innerHTML = '<div class="note warnnote">No aparece en el registro de Cámaras de Comercio. Puede ser una persona sin matrícula mercantil: llena los datos a mano.</div>'; return; }
+    regs.sort((x, y) => ((y.estado_matricula === 'ACTIVA') - (x.estado_matricula === 'ACTIVA')) || ((+y.ultimo_ano_renovado || 0) - (+x.ultimo_ano_renovado || 0)) || (/PRINCIPAL/.test(y.categoria_matricula || '') - /PRINCIPAL/.test(x.categoria_matricula || '')));
+    const r = regs[0];
+    const nombre = (r.razon_social || [r.primer_nombre, r.segundo_nombre, r.primer_apellido, r.segundo_apellido].filter(Boolean).join(' ')).trim();
+    if (nombre) $('#c_rs').value = nombre;
+    if (r.sigla && !$('#c_nc').value) $('#c_nc').value = r.sigla;
+    if (/NIT/i.test(r.clase_identificacion || '') || r.nit === n) $('#c_td').value = 'NIT';
+    else if (/CEDULA DE CIUDADANIA/i.test(r.clase_identificacion || '')) $('#c_td').value = 'CC';
+    if (r.digito_verificacion) $('#c_dv').value = r.digito_verificacion; else calcDV();
+    const activa = r.estado_matricula === 'ACTIVA';
+    info.innerHTML = `<div class="note ${activa ? '' : 'warnnote'}" style="margin-top:12px">${activa ? '✅' : '⚠️'} <b>${esc(nombre)}</b><br>Matrícula <b>${esc(r.estado_matricula || '')}</b> · Cámara de ${esc(r.camara_comercio || '')} · renovada ${esc(r.ultimo_ano_renovado || '—')}
+      ${r.representante_legal ? '<br>Representante legal: ' + esc(r.representante_legal) : ''}${r.organizacion_juridica ? '<br>' + esc(r.organizacion_juridica) : ''}
+      ${activa ? '' : '<br><b>Ojo:</b> la matrícula no está activa. Revisa antes de darle crédito.'}
+      <br><span style="font-size:12px">Dirección y teléfono no vienen en el registro: escríbelos tú.</span></div>`;
+  } catch (e) { info.innerHTML = '<div class="note warnnote">No se pudo consultar el registro ahora. Llena los datos a mano.</div>'; }
+  finally { b.disabled = false; b.textContent = '🔎 Buscar en Cámara de Comercio'; }
+}
 async function guardarCliente() {
   const b = $('#c_btn'); b.disabled = true;
   try {
     let ruta = $('#c_ruta').value || null;
     if ($('#c_nr').value.trim()) ruta = (await q(sb.from('rutas').insert({ nombre: $('#c_nr').value.trim() }).select('id').single())).id;
-    await q(sb.from('clientes').insert({ tipo_documento: $('#c_td').value, numero_documento: $('#c_nd').value.trim(), razon_social: $('#c_rs').value.trim(),
+    await q(sb.from('clientes').insert({ tipo_documento: $('#c_td').value, numero_documento: $('#c_nd').value.trim(), digito_verificacion: $('#c_dv').value || null, razon_social: $('#c_rs').value.trim(),
       nombre_comercial: $('#c_nc').value || null, telefono: $('#c_tel').value || null, email_facturacion: $('#c_em').value || null, direccion: $('#c_dir').value || null,
       municipio: $('#c_mun').value || 'Yopal', ruta_id: ruta, vendedor_id: $('#c_ven').value || null, lista_precio_id: $('#c_lis').value,
       cupo: +$('#c_cupo').value || 0, plazo_dias: +$('#c_pla').value || 0, forma_pago_habitual: $('#c_fp').value }));
