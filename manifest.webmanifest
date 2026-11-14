@@ -1,0 +1,14 @@
+{
+  "name": "DistriPan & Dulce",
+  "short_name": "DistriPan",
+  "description": "Pedidos, ventas e inventario de DistriPan & Dulce",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#2E1C12",
+  "theme_color": "#2E1C12",
+  "icons": [
+    { "src": "DistriPan_icono_app.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}
