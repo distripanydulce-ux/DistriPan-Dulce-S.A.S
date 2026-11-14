@@ -166,6 +166,17 @@ nav.tabs .dot{position:absolute;top:0;right:calc(50% - 22px);background:var(--ba
 .tirilla .tl{display:flex;justify-content:space-between;gap:8px}.tirilla .tot{font-size:16px;font-weight:900;margin:4px 0}
 @media print{@page{size:80mm auto;margin:2mm}body{background:#fff!important}body *{visibility:hidden!important}#printarea,#printarea *{visibility:visible!important}
 #printarea{position:absolute;left:0;top:0;width:76mm;box-shadow:none;border-radius:0;padding:0}.sheet-bg{background:none!important}}
+/* Categorías en cuadrícula: todas visibles, fáciles de tocar */
+.cats{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:12px 0 14px}
+.cat{border:2px solid transparent;background:#fff;border-radius:16px;padding:8px 4px 7px;display:flex;flex-direction:column;align-items:center;gap:4px;cursor:pointer;font:800 11px/1.15 'Nunito Sans',sans-serif;color:var(--ink);box-shadow:0 3px 10px rgba(90,58,36,.08);min-height:78px;transition:.15s}
+.cat .ci{width:42px;height:34px;border-radius:12px;display:grid;place-items:center;overflow:hidden}
+.cat .ci svg{width:40px;height:32px}
+.cat span:last-child{text-align:center;word-break:break-word}
+.cat.on{border-color:#D9486A;background:#FCE4EA;color:#A8324F}
+.cat:active{transform:scale(.95)}
+@media (max-width:360px){.cats{grid-template-columns:repeat(3,1fr)}}
+/* Las demás filas de botones (listas de precios) también bajan de renglón */
+.chips{flex-wrap:wrap;overflow:visible;margin-left:0;margin-right:0;padding-left:0;padding-right:0}
 
 /* Marca DistriPan & Dulce: café #2E1C12, dorado #F2B544/#E0A030, rosado #F48FA8/#D9486A */
 :root{--terra:#D9486A;--terra2:#A8324F;--crust:#E0A030;--honey:#F2B544}
@@ -399,8 +410,8 @@ async function loadCatalog(cliente) {
 function catalogHTML() {
   const lines = ['Todas', ...new Set(C.cat.map(p => p.linea))];
   return `<div class="search"><span class="si">🔎</span><input placeholder="Buscar pan, torta, galleta…" value="${esc(filt.q)}" oninput="filt.q=this.value;upd()"></div>
-  <div class="chips">${lines.map(l => l === 'Todas' ? `<button class="chip txt ${l === filt.l ? 'on' : ''}" onclick="filt.l='Todas';rcat()">✨ Todas</button>` :
-   `<button class="chip ${l === filt.l ? 'on' : ''}" onclick="filt.l='${esc(l)}';rcat()"><span class="ci" style="background:${KBG[LK[l]] || '#FBE7C6'}">${svg(LK[l] || 'loaf')}</span>${esc(l)}</button>`).join('')}</div>
+  <div class="cats">${lines.map(l => l === 'Todas' ? `<button class="cat ${l === filt.l ? 'on' : ''}" onclick="filt.l='Todas';rcat()"><span class="ci" style="background:#FCE4EA;font-size:22px">✨</span><span>Todas</span></button>` :
+   `<button class="cat ${l === filt.l ? 'on' : ''}" onclick="filt.l='${esc(l)}';rcat()"><span class="ci" style="background:${KBG[LK[l]] || '#FBE7C6'}">${svg(LK[l] || 'loaf')}</span><span>${esc(l)}</span></button>`).join('')}</div>
   <div class="pgrid" id="plist">${plist()}</div>`;
 }
 const flist = () => C.cat.filter(p => (filt.l === 'Todas' || p.linea === filt.l) && p.nombre.toLowerCase().includes(filt.q.toLowerCase()));
