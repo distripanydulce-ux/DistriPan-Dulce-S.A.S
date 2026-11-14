@@ -177,6 +177,9 @@ nav.tabs .dot{position:absolute;top:0;right:calc(50% - 22px);background:var(--ba
 @media (max-width:360px){.cats{grid-template-columns:repeat(3,1fr)}}
 /* Las demás filas de botones (listas de precios) también bajan de renglón */
 .chips{flex-wrap:wrap;overflow:visible;margin-left:0;margin-right:0;padding-left:0;padding-right:0}
+/* Fotos reales: se ven completas, sin cortar */
+.pc .art img{object-fit:contain;background:#fff}
+.th img{object-fit:contain;background:#fff}
 
 /* Marca DistriPan & Dulce: café #2E1C12, dorado #F2B544/#E0A030, rosado #F48FA8/#D9486A */
 :root{--terra:#D9486A;--terra2:#A8324F;--crust:#E0A030;--honey:#F2B544}
@@ -693,10 +696,29 @@ async function setPrecio(pid, v, costo) {
 function filtrarPrecios() { const t = (sub.pq || '').toLowerCase(); document.querySelectorAll('#plprec .li').forEach(el => el.style.display = el.dataset.n.includes(t) ? '' : 'none'); }
 const fotoCtl = pid => { const p = P(pid); return `<label class="th fotoed" title="Cambiar foto" style="background:${bgc2(p)}">${art2(p)}<span class="cam">📷</span><input type="file" accept="image/*" hidden onchange="subirFoto('${pid}',this)"></label>`; };
 function achicar(file) {
+  // Recorta el fondo blanco sobrante, centra el producto y lo deja en un cuadro de 800 × 800
   return new Promise((res, rej) => { const img = new Image();
-    img.onload = () => { const m = 800, s = Math.min(1, m / Math.max(img.width, img.height)); const c = document.createElement('canvas');
-      c.width = Math.round(img.width * s); c.height = Math.round(img.height * s); const x = c.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height); x.drawImage(img, 0, 0, c.width, c.height);
-      c.toBlob(b => b ? res(b) : rej(new Error('No se pudo leer la imagen')), 'image/jpeg', 0.82); URL.revokeObjectURL(img.src); };
+    img.onload = () => {
+      const W = img.naturalWidth, H = img.naturalHeight, k = Math.min(1, 1200 / Math.max(W, H));
+      const a = document.createElement('canvas'); a.width = Math.round(W * k); a.height = Math.round(H * k);
+      const ax = a.getContext('2d'); ax.fillStyle = '#fff'; ax.fillRect(0, 0, a.width, a.height); ax.drawImage(img, 0, 0, a.width, a.height);
+      let x0 = a.width, y0 = a.height, x1 = -1, y1 = -1;
+      try {
+        const d = ax.getImageData(0, 0, a.width, a.height).data;
+        for (let y = 0; y < a.height; y += 2) for (let x = 0; x < a.width; x += 2) {
+          const i = (y * a.width + x) * 4;
+          if (d[i] < 235 || d[i + 1] < 235 || d[i + 2] < 235) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+        }
+      } catch (e) {}
+      if (x1 < 0 || (x1 - x0) < 20 || (y1 - y0) < 20) { x0 = 0; y0 = 0; x1 = a.width - 1; y1 = a.height - 1; }
+      const w = x1 - x0 + 1, h = y1 - y0 + 1, lado = Math.round(Math.max(w, h) * 1.08), S = 800, e = S / lado;
+      const c = document.createElement('canvas'); c.width = S; c.height = S;
+      const cx = c.getContext('2d'); cx.fillStyle = '#fff'; cx.fillRect(0, 0, S, S);
+      cx.imageSmoothingQuality = 'high';
+      cx.drawImage(a, x0, y0, w, h, (S - w * e) / 2, (S - h * e) / 2, w * e, h * e);
+      URL.revokeObjectURL(img.src);
+      c.toBlob(b => b ? res(b) : rej(new Error('No se pudo leer la imagen')), 'image/jpeg', 0.85);
+    };
     img.onerror = () => rej(new Error('Ese archivo no es una imagen (usa JPG o PNG)')); img.src = URL.createObjectURL(file); });
 }
 async function subirFoto(pid, input) {
