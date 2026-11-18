@@ -193,6 +193,14 @@ nav.tabs .dot{position:absolute;top:0;right:calc(50% - 22px);background:var(--ba
 @page carta{size:letter;margin:12mm}
 @media print{#printarea.carta{page:carta;width:auto;right:0;font-size:12px}}
 
+/* Etapa 5: reportes y papel de 58 mm */
+.treporte{width:100%;border-collapse:collapse;font-size:13px}
+.treporte th,.treporte td{padding:6px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}
+.treporte th{font-weight:900;opacity:.75}.treporte .nr{text-align:right}.treporte tr.tt td{font-weight:900;border-top:2px solid var(--line)}
+body.p58 .tirilla{width:220px;font-size:11px;padding:10px 8px}
+@page p58{size:58mm auto;margin:1.5mm}
+@media print{body.p58 #printarea.tirilla{page:p58;width:54mm}}
+
 /* Marca DistriPan & Dulce: café #2E1C12, dorado #F2B544/#E0A030, rosado #F48FA8/#D9486A */
 :root{--terra:#D9486A;--terra2:#A8324F;--crust:#E0A030;--honey:#F2B544}
 header{background:linear-gradient(140deg,#2E1C12 0%,#3F2719 55%,#5A3820 100%)}
@@ -421,7 +429,7 @@ let ME = null, ROLE = null, tab = null, sub = {}, cart = {}, cartCli = null, fil
 const ROLES = {administrador:'Administración', gerencia:'Gerencia', vendedor:'Vendedor', conductor:'Conductor', bodega:'Bodega', cartera:'Cartera', cliente:'Cliente'};
 const TABS = {
   administrador: [['resumen','✨','Resumen'],['pedidos','✅','Pedidos'],['vender','🛒','Vender'],['precios','🏷️','Productos'],['clientes','👥','Clientes'],['usuarios','🔑','Usuarios']],
-  gerencia:      [['resumen','✨','Resumen'],['pedidos','✅','Pedidos'],['precios','🏷️','Productos'],['clientes','👥','Clientes']],
+  gerencia:      [['resumen','✨','Resumen'],['reportes','📈','Reportes'],['pedidos','✅','Pedidos'],['precios','🏷️','Productos'],['clientes','👥','Clientes']],
   vendedor:      [['inicio','🏠','Inicio'],['contado','💵','Contado'],['vender','🛒','Pedido'],['pedidos','📋','Pedidos'],['clientes','👥','Clientes']],
   cliente:       [['vitrina','🥐','Vitrina'],['pedidos','🚚','Mis pedidos']],
   bodega:        [['alistar','📦','Alistar'],['cargue','🚚','Cargue'],['compras','🧾','Compras'],['recibir','🚛','Recibir'],['inventario','📊','Inventario']],
@@ -431,6 +439,7 @@ const TABS = {
 
 // ---------- sesión ----------
 async function boot() {
+  document.body.classList.toggle('p58', papel() === '58');
   let session = null;
   try { session = (await sb.auth.getSession()).data.session; } catch (e) {}
   if (!session && !(lsGet('dpd_me') && !navigator.onLine)) return showLogin();
@@ -749,7 +758,7 @@ function verGuia(id) {
   ${p.pedido_items.map(i => `<div>${+i.cantidad} x ${esc(nice(P(i.producto_id).nombre || ''))}</div><div class="tr">${fmt(i.cantidad * i.precio_unitario)}</div>`).join('')}<hr>
   <div class="tl"><b>TOTAL</b><b>${fmt(tot)}</b></div><hr>
   <div class="c">Se factura en la cuenta del cliente.<br>No es factura electrónica.<br><br><br>_______________________<br>Recibido (nombre y firma)</div></div>`;
-  sheet(`${html}<div class="grid2" style="margin-top:14px"><button class="btn" onclick="imprimir()">🖨️ Imprimir</button><button class="btn sec" onclick="verPed('${id}')">← Volver</button></div>`);
+  sheet(`${html}${papelHTML()}<div class="grid2" style="margin-top:14px"><button class="btn" onclick="imprimir()">🖨️ Imprimir</button><button class="btn sec" onclick="verPed('${id}')">← Volver</button></div>`);
 }
 const pArtP = pr => `<div class="th" style="background:${bgc2(pr)}">${art2(pr)}</div>`;
 async function estado(id, est) {
@@ -788,7 +797,7 @@ V.inicio = async () => {
   <div style="font-size:13px;opacity:.8;font-weight:700">${meta ? 'Meta ' + fmt(meta) : 'Sin meta asignada'} · descuento máx. ${+a.descuento_max || 0}%</div></div>${ring(pct)}</div>
   ${av ? '' : '<div class="note warnnote">No se pudo calcular el avance de la meta en este momento.</div>'}
   ${await tarjetaCarga()}
-  <button class="btn sec" style="margin-bottom:12px" onclick="formDevolucion()">♻️ Registrar devolución de una tienda</button>
+  <div class="grid2" style="margin-bottom:12px"><button class="btn sec" onclick="formDevolucion()">♻️ Devolución</button><button class="btn sec" onclick="go('reportes')">📈 Mis ventas</button></div>
   <div class="tiles"><button class="tile t1" onclick="go('vender')"><span class="em">🛒</span><b>Nuevo pedido</b><span>Escoge el cliente</span></button>
   <button class="tile t4" onclick="go('pedidos')"><span class="em">📋</span><b>Mis pedidos</b><span>${mios.filter(p => p.estado === 'enviado').length} por aprobar</span></button>
   <button class="tile t3" onclick="go('contado')"><span class="em">💵</span><b>Venta de contado</b><span>Tirilla o factura</span></button>
@@ -1288,7 +1297,7 @@ V.inventario = async () => {
   const venc = await cached('dpd_venc', LD.venc).catch(() => null);
   const l = CAT.filter(p => sub.inv === 'todo' || (by[p.id] || 0) < 10); const mx = Math.max(1, ...Object.values(by));
   const kx = ['administrador','gerencia','bodega'].includes(ROLE);
-  return `<div class="row"><h2>Inventario</h2>${['administrador','bodega','gerencia'].includes(ROLE) ? '<button class="btn sm sec" onclick="go(\'averias\')">♻️ Averías</button>' : ''}</div>${totCarros > 0 ? `<div class="note">🚚 Además hay ${totCarros} unidades en los carros (ver Cargue).</div>` : ''}<div class="seg"><button class="${sub.inv === 'bajo' ? 'on' : ''}" onclick="sub.inv='bajo';refresh()">⚠️ Por agotarse (${CAT.filter(p => (by[p.id] || 0) < 10).length})</button><button class="${sub.inv === 'todo' ? 'on' : ''}" onclick="sub.inv='todo';refresh()">📦 Todo</button>${venc ? `<button class="${sub.inv === 'venc' ? 'on' : ''}" onclick="sub.inv='venc';refresh()">⏰ Por vencer (${venc.length})</button>` : ''}</div>
+  return `<div class="row"><h2>Inventario</h2><div>${ROLE === 'bodega' ? '<button class="btn sm sec" onclick="go(\'reportes\')">📈 Reportes</button> ' : ''}${['administrador','bodega','gerencia'].includes(ROLE) ? '<button class="btn sm sec" onclick="go(\'averias\')">♻️ Averías</button>' : ''}</div></div>${totCarros > 0 ? `<div class="note">🚚 Además hay ${totCarros} unidades en los carros (ver Cargue).</div>` : ''}<div class="seg"><button class="${sub.inv === 'bajo' ? 'on' : ''}" onclick="sub.inv='bajo';refresh()">⚠️ Por agotarse (${CAT.filter(p => (by[p.id] || 0) < 10).length})</button><button class="${sub.inv === 'todo' ? 'on' : ''}" onclick="sub.inv='todo';refresh()">📦 Todo</button>${venc ? `<button class="${sub.inv === 'venc' ? 'on' : ''}" onclick="sub.inv='venc';refresh()">⏰ Por vencer (${venc.length})</button>` : ''}</div>
   ${kx ? '<div class="mut" style="margin:6px 0">Toca un producto para ver su kardex.</div>' : ''}
   ${sub.inv === 'venc' ? `<div class="note">Vencen en los próximos 7 días. Se calcula suponiendo que sale primero lo que vence primero.</div><div class="card">${(venc || []).map(v => `<div class="li" style="cursor:pointer" onclick="verKardex('${v.producto_id}')">${pArtP(P(v.producto_id))}<div class="pn"><b>${nm(P(v.producto_id))}</b><span>Lote ${esc(v.codigo_lote)} · ${v.dias < 0 ? '<b style="color:var(--bad)">vencido hace ' + (-v.dias) + ' días</b>' : v.dias === 0 ? '<b style="color:var(--bad)">vence hoy</b>' : 'vence en ' + v.dias + (v.dias === 1 ? ' día' : ' días')}</span></div><span class="badge ${v.dias <= 2 ? 'b-bad' : 'b-pend'}">${+v.cantidad}</span></div>`).join('') || '<div class="mut">Nada por vencer en los próximos 7 días 🎉</div>'}</div>` : `
   <div class="card">${l.map(p => { const s = by[p.id] || 0; return `<div class="li" ${kx ? `style="cursor:pointer" onclick="verKardex('${p.id}')"` : ''}>${pArtP(p)}<div class="pn"><b>${nm(p)}</b><div class="bar"><i style="width:${Math.max(3, s / mx * 100)}%;${s < 10 ? 'background:linear-gradient(90deg,#E0603F,#B3321E)' : ''}"></i></div></div><span class="badge ${s < 10 ? 'b-bad' : 'b-ok'}">${s}</span></div>`; }).join('')}</div>`}`;
@@ -1336,7 +1345,7 @@ V.resumen = async () => {
   <div class="kpi" style="background:linear-gradient(135deg,#D58A12,#F2BB45)"><div class="k">Clientes</div><div class="v">${nCli ?? 0}</div><span class="ke">👥</span></div>
   <div class="kpi" style="background:linear-gradient(135deg,#B3321E,#E0603F)"><div class="k">Productos activos</div><div class="v">${CAT.length}</div><span class="ke">🥖</span></div></div>
   <h3>Ventas por línea (pedidos)</h3><div class="card chart">${ent.map(([l, v], i) => `<div class="cb"><span class="lab">${esc(l)}</span><div class="tr"><i style="width:${v / mx * 100}%;background:${COL[i % COL.length]}"></i></div><span class="vv">${fmt(v)}</span></div>`).join('') || '<div class="mut">Aún no hay pedidos.</div>'}</div>
-  <div class="grid2" style="margin-top:14px">${[['cartera','💰','Cartera'],['cargue','🚚','Cargue y liquidación'],['averias','♻️','Averías'],['compras','🧾','Compras'],['recibir','🚛','Recibir'],['inventario','📊','Inventario'],['alistar','📦','Alistar']].filter(x => ROLE === 'administrador' || ['cartera','cargue','averias','compras','inventario'].includes(x[0])).map(([k, i, n]) => `<button class="btn sec" onclick="go('${k}')">${i} ${n}</button>`).join('')}</div>
+  <div class="grid2" style="margin-top:14px">${[['reportes','📈','Reportes'],['cartera','💰','Cartera'],['cargue','🚚','Cargue y liquidación'],['averias','♻️','Averías'],['compras','🧾','Compras'],['recibir','🚛','Recibir'],['inventario','📊','Inventario'],['alistar','📦','Alistar']].filter(x => ROLE === 'administrador' || ['cartera','cargue','averias','compras','inventario'].includes(x[0])).map(([k, i, n]) => `<button class="btn sec" onclick="go('${k}')">${i} ${n}</button>`).join('')}</div>
   ${ROLE === 'administrador' ? `<button class="card" style="width:100%;border:0;text-align:left;cursor:pointer;font:inherit;margin-top:14px" onclick="go('empresa')"><div class="row"><div><b>🏢 Datos de la empresa</b><div class="mut">${EMP().nit ? 'NIT ' + esc(EMP().nit) + ' · ' : ''}Nombre, NIT, dirección y teléfono de la tirilla</div></div><span style="font-size:22px">›</span></div></button>` : ''}
   <div class="note">Cartera, facturación con Siigo y rutas llegan en las siguientes fases.</div>`;
 };
@@ -1820,10 +1829,14 @@ function verTicket(id) {
   const t = (C.tk || {})[id]; if (!t) return;
   const txt = `${EMP().razon_social || BRAND}${EMP().nit ? ' · NIT ' + EMP().nit + (EMP().digito_verificacion ? '-' + EMP().digito_verificacion : '') : ''}\nComprobante de venta ${t.numero ? 'V-' + t.numero : '(pendiente)'}\n${new Date(t.fecha).toLocaleString('es-CO')}\nCliente: ${t.cliente ? t.cliente.nombre : 'Consumidor final'}\n` +
     t.lineas.map(l => `${l.n} x ${nice(l.nombre)}: ${fmt(l.n * l.precio)}`).join('\n') + `\nTOTAL: ${fmt(t.total)}\nPago: ${MEDIO_N[t.medio] || t.medio}\n(No es factura electrónica)`;
-  sheet(`${ticketHTML(t)}<div class="grid2" style="margin-top:14px"><button class="btn" onclick="imprimir()">🖨️ Imprimir</button><a class="btn sec" style="text-decoration:none" href="https://wa.me/?text=${encodeURIComponent(txt)}" target="_blank" rel="noopener">📲 WhatsApp</a></div>
+  sheet(`${ticketHTML(t)}${papelHTML()}<div class="grid2" style="margin-top:14px"><button class="btn" onclick="imprimir()">🖨️ Imprimir</button><a class="btn sec" style="text-decoration:none" href="https://wa.me/?text=${encodeURIComponent(txt)}" target="_blank" rel="noopener">📲 WhatsApp</a></div>
   <div style="height:10px"></div><button class="btn sec" onclick="closeSheet();${tab === 'contado' ? 'refresh()' : ''}">${tab === 'contado' ? '＋ Nueva venta' : 'Cerrar'}</button>`);
 }
 function imprimir() { try { window.print(); } catch (e) { toast('No se pudo abrir la impresión', true); } }
+// Ancho del papel de la impresora de este celular (58 u 80 mm); se guarda en el celular
+const papel = () => { try { return localStorage.getItem('dpd_papel') || '80'; } catch (e) { return '80'; } };
+function setPapel(w) { try { localStorage.setItem('dpd_papel', w); } catch (e) {} document.body.classList.toggle('p58', w === '58'); document.querySelectorAll('.papel button').forEach(b => b.classList.toggle('on', b.dataset.w === w)); }
+const papelHTML = () => `<div class="seg papel" style="margin-top:10px"><span class="mut" style="align-self:center;padding:0 8px">Papel:</span>${['58','80'].map(w => `<button type="button" data-w="${w}" class="${papel() === w ? 'on' : ''}" onclick="setPapel('${w}')">${w} mm</button>`).join('')}</div>`;
 const PERIODOS = [['hoy','Hoy'],['ayer','Ayer'],['7d','7 días'],['mes','Este mes'],['mesant','Mes pasado']];
 function rango(p) {
   const d = new Date(); d.setHours(0, 0, 0, 0); let a = new Date(d), b = new Date(d); b.setDate(b.getDate() + 1);
@@ -1890,7 +1903,7 @@ V.cartera = async () => {
     <div class="row" style="margin-top:8px"><span>Total ${fmt(c.total)}</span><b class="big" style="font-size:19px;color:${s > 0 ? 'var(--terra2)' : 'var(--ok)'}">${s > 0 ? 'Debe ' + fmt(s) : 'Pagada'}</b></div>
     <div class="acts"><button class="btn sm sec" onclick="verCuenta('${c.id}')">🧾 Ver</button>${puede && c.estado === 'abierta' ? `<button class="btn sm sec" onclick="formFactura('${c.id}')">✏️ Factura</button><button class="btn sm okb" onclick="formPago('${c.cliente_id}','${c.id}')">💵 Registrar pago</button>` : ''}</div></div>`; };
   const segs = [['facturar', 'Por facturar (' + Object.keys(grupos).length + ')'], ['cobrar', 'Por cobrar (' + abiertas.length + ')'], ['clientes', 'Clientes'], ['pagadas', 'Pagadas']];
-  return `<div class="row"><h2>💰 Cartera</h2><button class="btn sm sec" onclick="['dpd_cartera','dpd_porfact','dpd_cuentas'].forEach(k=>lsDel(uk(k)));refresh()">↻</button></div>
+  return `<div class="row"><h2>💰 Cartera</h2><div><button class="btn sm sec" onclick="sub.rp='cartera';go('reportes')">📈 Edades</button> <button class="btn sm sec" onclick="['dpd_cartera','dpd_porfact','dpd_cuentas'].forEach(k=>lsDel(uk(k)));refresh()">↻</button></div></div>
   <div class="hero"><div style="flex:1"><div class="lbl">Por cobrar</div><div class="val">${fmt(porCobrar)}</div><div style="font-size:13px;opacity:.85;font-weight:700">${vencido ? '🔴 Vencido ' + fmt(vencido) + ' · ' : ''}Por facturar ${fmt(totPF)}</div></div><div style="font-size:42px">💰</div></div>
   <div class="seg">${segs.map(([k, n]) => `<button class="${sub.ca === k ? 'on' : ''}" onclick="sub.ca='${k}';refresh()">${n}</button>`).join('')}</div>
   ${sub.ca === 'facturar' ? `<div class="note">Entregas hechas que aún no están en una cuenta de cobro. Escoge las de cada cliente (por ejemplo, toda la ronda de sus almacenes) y haz una sola cuenta.</div>
@@ -1984,6 +1997,134 @@ async function verCuenta(id) {
   <div style="margin-top:10px;font-size:12px">${c.estado === 'pagada' ? '<b>PAGADA</b>' : 'Saldo pendiente: <b>' + fmt(c.saldo) + '</b>'}</div></div>
   <div class="grid2" style="margin-top:14px"><button class="btn" onclick="imprimir()">🖨️ Imprimir o PDF</button><a class="btn sec" style="text-decoration:none" href="https://wa.me/?text=${encodeURIComponent(txt)}" target="_blank" rel="noopener">📲 WhatsApp</a></div>
   <div style="height:10px"></div><button class="btn sec" onclick="closeSheet()">Cerrar</button>`;
+}
+// ---------- Reportes (Etapa 5) ----------
+const REP_PER = [['mes','Este mes'],['mesant','Mes pasado'],['7d','7 días'],['hoy','Hoy'],['rango','Fechas']];
+const dISO = d => new Date(d.getTime() - d.getTimezoneOffset() * 6e4).toISOString().slice(0, 10);
+function rangoRep() {
+  const p = sub.rpp || 'mes';
+  if (p === 'rango') return [sub.rpd || dISO(new Date(Date.now() - 30 * 864e5)), sub.rph || dISO(new Date())];
+  const [a, b] = rango(p); b.setDate(b.getDate() - 1); return [dISO(a), dISO(b)];
+}
+// Tabla del reporte: lo que se ve también queda listo para Excel
+function tablaRep(nombre, cols, filas, opt = {}) {
+  C.repHojas.push({ nombre, cols, filas });
+  const lim = opt.lim == null ? 50 : opt.lim, ver = filas.slice(0, lim);
+  const cel = (c, f) => { const v = f[c.k]; return c.f === '$' ? fmt(v) : c.f === '%' ? (v == null ? '—' : (+v).toFixed(1) + '%') : c.f === 'n' ? (v == null ? '—' : (+(+v).toFixed(1)).toLocaleString('es-CO')) : esc(v == null ? '' : String(v)); };
+  if (!lim) return `<div class="mut" style="margin-top:8px">📄 La hoja "${esc(nombre)}" (${filas.length} filas) sale en el Excel.</div>`;
+  return `<h3>${esc(nombre)}</h3><div class="card" style="overflow-x:auto;padding:8px"><table class="treporte"><tr>${cols.map(c => `<th${c.f ? ' class="nr"' : ''}>${esc(c.t)}</th>`).join('')}</tr>
+  ${ver.map(f => `<tr>${cols.map(c => `<td${c.f ? ' class="nr"' : ''}>${cel(c, f)}</td>`).join('')}</tr>`).join('') || `<tr><td colspan="${cols.length}" class="mut">Sin datos en este periodo</td></tr>`}
+  ${opt.total && filas.length ? `<tr class="tt">${cols.map((c, i) => `<td${c.f ? ' class="nr"' : ''}>${i === 0 ? 'Total' : opt.total.includes(c.k) ? cel(c, { [c.k]: filas.reduce((a, f) => a + (+f[c.k] || 0), 0) }) : ''}</td>`).join('')}</tr>` : ''}</table>
+  ${filas.length > lim ? `<div class="mut">Se ven ${lim} de ${filas.length}; en Excel salen todas.</div>` : ''}</div>`;
+}
+const agrupa = (rows, key, campos) => { const m = {}; rows.forEach(r => { const k = key(r); const g = m[k] = m[k] || { _k: k }; campos.forEach(c => g[c] = (g[c] || 0) + (+r[c] || 0)); }); return Object.values(m); };
+const kpi = (l, v, s2) => `<div class="card" style="flex:1;min-width:140px;margin:0"><div class="mut">${l}</div><div class="big" style="font-size:20px">${v}</div>${s2 ? `<div class="mut">${s2}</div>` : ''}</div>`;
+const kpis = l => `<div style="display:flex;gap:10px;flex-wrap:wrap;margin:10px 0">${l.join('')}</div>`;
+V.reportes = async () => {
+  const adm = ['administrador','gerencia'].includes(ROLE);
+  const disp = adm ? [['ventas','Ventas'],['margenes','Márgenes'],['inventario','Inventario'],['rutas','Rutas'],['cartera','Cartera'],['compras','Compras']]
+    : ROLE === 'vendedor' ? [['ventas','Mis ventas']] : ROLE === 'cartera' ? [['cartera','Cartera'],['rutas','Rutas']] : ROLE === 'bodega' ? [['inventario','Inventario'],['compras','Compras'],['rutas','Rutas']] : [];
+  if (!disp.length) return '<div class="empty"><span class="e">🔒</span>No tienes reportes asignados.</div>';
+  if (!disp.some(d => d[0] === sub.rp)) sub.rp = disp[0][0];
+  const [d1, d2] = rangoRep(); C.repHojas = [];
+  const vend = adm ? sub.rpv || '' : '', ruta = adm ? sub.rpr || '' : '';
+  const rutas = adm ? await cached('dpd_rutas', LD.rutas).catch(() => []) : [];
+  const filtros = `<div class="seg" style="margin-top:8px">${REP_PER.map(([k, n]) => `<button class="${(sub.rpp || 'mes') === k ? 'on' : ''}" onclick="sub.rpp='${k}';refresh()">${n}</button>`).join('')}</div>
+  ${sub.rpp === 'rango' ? `<div class="grid2"><div><label>Desde</label><input type="date" value="${d1}" onchange="sub.rpd=this.value;refresh()"></div><div><label>Hasta</label><input type="date" value="${d2}" onchange="sub.rph=this.value;refresh()"></div></div>` : ''}
+  <div class="mut" style="margin:6px 0">Del ${new Date(d1 + 'T12:00').toLocaleDateString('es-CO')} al ${new Date(d2 + 'T12:00').toLocaleDateString('es-CO')}</div>`;
+  const q2 = (k, f) => cached('dpd_rep_' + k, f);
+  let cuerpo = '';
+  if (sub.rp === 'ventas' || sub.rp === 'margenes') {
+    const rows = await q2(`v_${d1}_${d2}_${vend}_${ruta}`, () => q(sb.rpc('reporte_ventas', { p_desde: d1, p_hasta: d2, p_vendedor: vend || null, p_ruta: ruta || null })));
+    rows.forEach(r => { const p = P(r.producto_id); r.producto = nice(p.nombre || ''); r.codigo = p.codigo || ''; r.linea = p.linea || 'Sin línea'; });
+    const tot = rows.reduce((a, r) => a + +r.valor, 0), cont = rows.filter(r => r.tipo === 'contado').reduce((a, r) => a + +r.valor, 0);
+    const vends = [...new Map(rows.map(r => [r.vendedor_id, r.vendedor])).entries()].filter(([k]) => k);
+    if (!vend && !ruta && vends.length) C.repVends = vends;
+    const lv = C.repVends || vends;
+    const filtroV = adm ? `<div class="grid2"><div><label>Vendedor</label><select onchange="sub.rpv=this.value;refresh()"><option value="">Todos</option>${lv.map(([k, n]) => `<option value="${k}" ${vend === k ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select></div>
+      <div><label>Ruta</label><select onchange="sub.rpr=this.value;refresh()"><option value="">Todas</option>${rutas.map(r => `<option value="${r.id}" ${ruta === r.id ? 'selected' : ''}>${esc(r.nombre)}</option>`).join('')}</select></div></div>` : '';
+    if (sub.rp === 'ventas') {
+      // El periodo anterior del mismo largo, para comparar
+      const largo = Math.round((new Date(d2) - new Date(d1)) / 864e5) + 1, pa = new Date(new Date(d1 + 'T12:00').getTime() - largo * 864e5), pb = new Date(new Date(d1 + 'T12:00').getTime() - 864e5);
+      const prev = await q2(`v_${dISO(pa)}_${dISO(pb)}_${vend}_${ruta}`, () => q(sb.rpc('reporte_ventas', { p_desde: dISO(pa), p_hasta: dISO(pb), p_vendedor: vend || null, p_ruta: ruta || null }))).catch(() => null);
+      const totPrev = prev ? prev.reduce((a, r) => a + +r.valor, 0) : null, varPct = totPrev ? (tot - totPrev) / totPrev * 100 : null;
+      let metas = '';
+      if ((sub.rpp || 'mes') === 'mes') {
+        const ids = ROLE === 'vendedor' ? [ME.id] : vend ? [vend] : lv.map(v => v[0]);
+        const av = await Promise.all(ids.map(id => q(sb.rpc('avance_vendedor', ROLE === 'vendedor' ? {} : { p_vendedor: id })).then(d => ({ id, ...(Array.isArray(d) ? d[0] : d) })).catch(() => null)));
+        const ok = av.filter(x => x && +x.meta > 0);
+        if (ok.length) metas = `<h3>Meta del mes</h3><div class="card">${ok.map(x => { const n = (lv.find(v => v[0] === x.id) || [0, ME.nombre])[1], pc = x.total / x.meta * 100;
+          return `<div class="li"><div class="pn"><b>${esc(n)}</b><span>${fmt(x.total)} de ${fmt(x.meta)}</span><div class="bar"><i style="width:${Math.max(3, Math.min(100, pc))}%"></i></div></div><b>${pc.toFixed(0)}%</b></div>`; }).join('')}</div>`;
+      }
+      const porDia = agrupa(rows, r => r.fecha, ['valor']).sort((a, b) => a._k.localeCompare(b._k)), mx = Math.max(1, ...porDia.map(x => x.valor));
+      cuerpo = `${filtroV}${kpis([kpi('Vendido', fmt(tot), varPct == null ? '' : `${varPct >= 0 ? '▲' : '▼'} ${Math.abs(varPct).toFixed(0)}% contra el periodo anterior (${fmt(totPrev)})`), kpi('Pedidos', fmt(tot - cont)), kpi('Contado', fmt(cont)), kpi('Clientes', new Set(rows.map(r => r.cliente_id || 'cf')).size)])}
+      ${metas}
+      <h3>Por día</h3><div class="card">${porDia.map(x => `<div class="li" style="padding:4px 0"><div class="pn"><span>${new Date(x._k + 'T12:00').toLocaleDateString('es-CO', { weekday: 'short', day: 'numeric', month: 'short' })}</span><div class="bar"><i style="width:${Math.max(2, x.valor / mx * 100)}%"></i></div></div><b>${fmt(x.valor)}</b></div>`).join('') || '<div class="mut">Sin ventas en este periodo</div>'}</div>
+      ${adm ? tablaRep('Por vendedor', [{ k: '_k', t: 'Vendedor' }, { k: 'valor', t: 'Vendido', f: '$' }], agrupa(rows, r => r.vendedor, ['valor']).sort((a, b) => b.valor - a.valor), { total: ['valor'] })
+        + tablaRep('Por ruta', [{ k: '_k', t: 'Ruta' }, { k: 'valor', t: 'Vendido', f: '$' }], agrupa(rows, r => r.ruta, ['valor']).sort((a, b) => b.valor - a.valor), { total: ['valor'] }) : ''}
+      ${tablaRep('Por cliente', [{ k: '_k', t: 'Cliente' }, { k: 'valor', t: 'Vendido', f: '$' }], agrupa(rows, r => r.cliente, ['valor']).sort((a, b) => b.valor - a.valor), { lim: 20, total: ['valor'] })}
+      ${tablaRep('Por producto', [{ k: '_k', t: 'Producto' }, { k: 'cantidad', t: 'Unid.', f: 'n' }, { k: 'valor', t: 'Vendido', f: '$' }], agrupa(rows, r => r.producto, ['cantidad', 'valor']).sort((a, b) => b.valor - a.valor), { lim: 20, total: ['cantidad', 'valor'] })}
+      ${tablaRep('Detalle de ventas', [{ k: 'fecha', t: 'Fecha' }, { k: 'tipo', t: 'Tipo' }, { k: 'vendedor', t: 'Vendedor' }, { k: 'ruta', t: 'Ruta' }, { k: 'cliente', t: 'Cliente' }, { k: 'codigo', t: 'Código' }, { k: 'producto', t: 'Producto' }, { k: 'cantidad', t: 'Unid.', f: 'n' }, { k: 'valor', t: 'Valor', f: '$' }], rows, { lim: 0 })}`;
+    } else {
+      const m = g => g.map(x => ({ ...x, ganancia: x.valor - x.costo, margen: x.valor ? (x.valor - x.costo) / x.valor * 100 : null }));
+      const cols = n => [{ k: '_k', t: n }, { k: 'valor', t: 'Venta', f: '$' }, { k: 'costo', t: 'Costo', f: '$' }, { k: 'ganancia', t: 'Ganancia', f: '$' }, { k: 'margen', t: 'Margen', f: '%' }];
+      const cos = rows.reduce((a, r) => a + +(r.costo || 0), 0);
+      cuerpo = `${filtroV}${kpis([kpi('Venta', fmt(tot)), kpi('Costo', fmt(cos)), kpi('Ganancia', fmt(tot - cos), tot ? ((tot - cos) / tot * 100).toFixed(1) + '% de margen' : '')])}
+      <div class="mut">El costo es el guardado en Productos (incluye el viaje). Un producto sin costo cuenta como costo cero.</div>
+      ${tablaRep('Margen por línea', cols('Línea'), m(agrupa(rows, r => r.linea, ['valor', 'costo'])).sort((a, b) => b.ganancia - a.ganancia), { total: ['valor', 'costo', 'ganancia'] })}
+      ${tablaRep('Margen por vendedor', cols('Vendedor'), m(agrupa(rows, r => r.vendedor, ['valor', 'costo'])).sort((a, b) => b.ganancia - a.ganancia), { total: ['valor', 'costo', 'ganancia'] })}
+      ${tablaRep('Margen por producto', cols('Producto'), m(agrupa(rows, r => r.producto, ['valor', 'costo'])).sort((a, b) => b.ganancia - a.ganancia), { lim: 30, total: ['valor', 'costo', 'ganancia'] })}`;
+    }
+  } else if (sub.rp === 'inventario') {
+    const rows = (await q2('inv', () => q(sb.rpc('reporte_inventario')))).map(r => { const p = P(r.producto_id); return { ...r, producto: nice(p.nombre || ''), codigo: p.codigo || '' }; });
+    const val = rows.reduce((a, r) => a + +(r.valor_bodega || 0), 0), sinRot = rows.filter(r => +r.vendido_30d === 0 && +r.en_bodega > 0);
+    sub.rpo = sub.rpo || 'lenta';
+    const ord = sub.rpo === 'lenta' ? [...rows].sort((a, b) => (b.dias_inventario == null ? 1e9 : +b.dias_inventario) - (a.dias_inventario == null ? 1e9 : +a.dias_inventario)) : [...rows].sort((a, b) => +b.vendido_30d - +a.vendido_30d);
+    cuerpo = `<div class="mut">Así está hoy (no depende de las fechas).</div>${kpis([adm ? kpi('Valor en bodega y carros', fmt(val), 'a costo') : '', kpi('Unidades en bodega', rows.reduce((a, r) => a + +r.en_bodega, 0).toLocaleString('es-CO')), kpi('En averías', rows.reduce((a, r) => a + +r.en_averias, 0).toLocaleString('es-CO')), kpi('Sin ventas en 30 días', sinRot.length + ' productos')])}
+    <div class="seg"><button class="${sub.rpo === 'lenta' ? 'on' : ''}" onclick="sub.rpo='lenta';refresh()">🐢 Rotan menos</button><button class="${sub.rpo === 'rapida' ? 'on' : ''}" onclick="sub.rpo='rapida';refresh()">🚀 Rotan más</button></div>
+    ${tablaRep('Inventario', [{ k: 'codigo', t: 'Código' }, { k: 'producto', t: 'Producto' }, { k: 'en_bodega', t: 'Bodega', f: 'n' }, { k: 'en_carros', t: 'Carros', f: 'n' }, { k: 'en_averias', t: 'Averías', f: 'n' }, { k: 'vendido_30d', t: 'Vendido 30 d', f: 'n' }, { k: 'dias_inventario', t: 'Días de inventario', f: 'n' }, ...(adm ? [{ k: 'valor_bodega', t: 'Valor', f: '$' }] : [])], ord, { lim: 40, total: ['en_bodega', 'en_carros', 'en_averias', 'vendido_30d', ...(adm ? ['valor_bodega'] : [])] })}
+    <div class="mut">Días de inventario = lo que hay ÷ lo que se vende al día (últimos 30 días). "—" = no se vendió.</div>`;
+  } else if (sub.rp === 'rutas') {
+    const rows = await q2(`r_${d1}_${d2}`, () => q(sb.rpc('reporte_rutas', { p_desde: d1, p_hasta: d2 })));
+    const devs = (adm || ROLE === 'bodega') ? (await q2(`d_${d1}_${d2}`, () => q(sb.rpc('reporte_devoluciones', { p_desde: d1, p_hasta: d2 }))).catch(() => [])).map(r => ({ ...r, producto: nice(P(r.producto_id).nombre || ''), motivo: MOTIVO[r.motivo] || r.motivo })) : [];
+    const porP = agrupa(rows, r => r.responsable, ['cargado', 'faltan_unid', 'sobran_unid', 'faltan_valor', 'diferencia_plata', 'devoluciones']);
+    cuerpo = `${kpis([kpi('Liquidaciones', rows.length), kpi('Mercancía faltante', fmt(rows.reduce((a, r) => a + +r.faltan_valor, 0)), rows.reduce((a, r) => a + +r.faltan_unid, 0) + ' unidades'), kpi('Diferencia en plata', fmt(rows.reduce((a, r) => a + (+r.diferencia_plata || 0), 0)), 'negativo = faltó plata')])}
+    ${tablaRep('Por vendedor o conductor', [{ k: '_k', t: 'Persona' }, { k: 'cargado', t: 'Cargado', f: 'n' }, { k: 'faltan_unid', t: 'Faltaron', f: 'n' }, { k: 'sobran_unid', t: 'Sobraron', f: 'n' }, { k: 'faltan_valor', t: 'Valor faltante', f: '$' }, { k: 'diferencia_plata', t: 'Dif. plata', f: '$' }, { k: 'devoluciones', t: 'Devoluciones', f: 'n' }], porP, { total: ['cargado', 'faltan_unid', 'sobran_unid', 'faltan_valor', 'diferencia_plata', 'devoluciones'] })}
+    ${tablaRep('Liquidaciones', [{ k: 'fecha', t: 'Fecha' }, { k: 'numero', t: 'Cargue' }, { k: 'responsable', t: 'Persona' }, { k: 'estado', t: 'Estado' }, { k: 'faltan_unid', t: 'Faltaron', f: 'n' }, { k: 'efectivo_esperado', t: 'Efectivo esperado', f: '$' }, { k: 'efectivo_entregado', t: 'Entregó', f: '$' }, { k: 'diferencia_plata', t: 'Diferencia', f: '$' }], rows, { lim: 40 })}
+    ${devs.length ? tablaRep('Devoluciones de tiendas', [{ k: 'cliente', t: 'Tienda' }, { k: 'producto', t: 'Producto' }, { k: 'motivo', t: 'Motivo' }, { k: 'cantidad', t: 'Unid.', f: 'n' }, { k: 'con_cambio', t: 'Con cambio', f: 'n' }], devs, { lim: 30, total: ['cantidad', 'con_cambio'] }) : ''}`;
+  } else if (sub.rp === 'cartera') {
+    const rows = await q2(`c_${d1}_${d2}`, () => q(sb.rpc('reporte_cartera', { p_desde: d1, p_hasta: d2 })));
+    const S = k => rows.reduce((a, r) => a + +r[k], 0);
+    cuerpo = `${kpis([kpi('Por cobrar hoy', fmt(S('total'))), kpi('Vencido', fmt(S('d1_30') + S('d31_60') + S('mas_60')), 'más de 60 días: ' + fmt(S('mas_60'))), kpi('Recaudado en el periodo', fmt(S('recaudado')))])}
+    ${tablaRep('Edades de cartera', [{ k: 'cliente', t: 'Cliente' }, { k: 'al_dia', t: 'Al día', f: '$' }, { k: 'd1_30', t: '1-30 días', f: '$' }, { k: 'd31_60', t: '31-60 días', f: '$' }, { k: 'mas_60', t: '+60 días', f: '$' }, { k: 'total', t: 'Total', f: '$' }, { k: 'recaudado', t: 'Recaudado', f: '$' }], rows, { lim: 60, total: ['al_dia', 'd1_30', 'd31_60', 'mas_60', 'total', 'recaudado'] })}
+    <div class="mut">Las edades son de hoy; "Recaudado" es lo pagado entre las fechas escogidas.</div>`;
+  } else if (sub.rp === 'compras') {
+    const rows = (await q2(`k_${d1}_${d2}`, () => q(sb.rpc('reporte_compras', { p_desde: d1, p_hasta: d2 })))).map(r => ({ ...r, producto: nice(P(r.producto_id).nombre || ''), cumpl: +r.pedido ? (+r.recibido_bien + +r.danado) / +r.pedido * 100 : null }));
+    const porProv = agrupa(rows, r => r.proveedor, ['pedido', 'recibido_bien', 'danado', 'costo']).map(x => ({ ...x, cumpl: x.pedido ? (x.recibido_bien + x.danado) / x.pedido * 100 : null }));
+    cuerpo = `${tablaRep('Compras por proveedor', [{ k: '_k', t: 'Proveedor' }, { k: 'pedido', t: 'Pedido', f: 'n' }, { k: 'recibido_bien', t: 'Llegó bien', f: 'n' }, { k: 'danado', t: 'Dañado', f: 'n' }, { k: 'cumpl', t: 'Cumplimiento', f: '%' }, ...(adm ? [{ k: 'costo', t: 'Valor a costo', f: '$' }] : [])], porProv, { total: ['pedido', 'recibido_bien', 'danado', ...(adm ? ['costo'] : [])] })}
+    ${tablaRep('Compras por producto', [{ k: 'proveedor', t: 'Proveedor' }, { k: 'producto', t: 'Producto' }, { k: 'pedido', t: 'Pedido', f: 'n' }, { k: 'recibido_bien', t: 'Llegó bien', f: 'n' }, { k: 'danado', t: 'Dañado', f: 'n' }, { k: 'cumpl', t: 'Cumplimiento', f: '%' }], rows, { lim: 40 })}
+    <div class="mut">Cumplimiento = lo que llegó (bien + dañado) ÷ lo pedido.</div>`;
+  }
+  return `<div class="row"><h2>📈 ${ROLE === 'vendedor' ? 'Mis ventas' : 'Reportes'}</h2><button class="btn sm" onclick="excelRep()">⬇️ Excel</button></div>
+  ${disp.length > 1 ? `<div class="seg">${disp.map(([k, n]) => `<button class="${sub.rp === k ? 'on' : ''}" onclick="sub.rp='${k}';refresh()">${n}</button>`).join('')}</div>` : ''}
+  ${sub.rp !== 'inventario' ? filtros : ''}${cuerpo}`;
+};
+// Descarga en Excel lo que se ve (cada tabla en una hoja)
+async function excelRep() {
+  if (!C.repHojas || !C.repHojas.length) return toast('No hay datos para descargar', true);
+  if (!window.XLSX) {
+    toast('Preparando el archivo…');
+    try { await new Promise((ok, no) => { const sc = document.createElement('script'); sc.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js'; sc.onload = ok; sc.onerror = no; document.head.appendChild(sc); }); }
+    catch (e) { return toast('Sin señal: la descarga a Excel necesita internet', true); }
+  }
+  const wb = XLSX.utils.book_new(), [d1, d2] = rangoRep(), usados = new Set();
+  C.repHojas.forEach(h => {
+    const datos = [h.cols.map(c => c.t), ...h.filas.map(f => h.cols.map(c => { const v = f[c.k]; return c.f && v != null && v !== '' ? Math.round(+v * 100) / 100 : v == null ? '' : v; }))];
+    const ws = XLSX.utils.aoa_to_sheet(datos); ws['!cols'] = h.cols.map(c => ({ wch: c.f ? 14 : 28 }));
+    let n = h.nombre.replace(/[\\/?*\[\]:]/g, '').slice(0, 28), i = 2; while (usados.has(n)) n = n.slice(0, 26) + ' ' + i++; usados.add(n);
+    XLSX.utils.book_append_sheet(wb, ws, n);
+  });
+  XLSX.writeFile(wb, `DistriPan_${sub.rp}_${sub.rp === 'inventario' ? dISO(new Date()) : d1 + '_a_' + d2}.xlsx`);
 }
 V.proximo = async () => `<h2>${ROLE === 'cartera' ? 'Cartera' : 'Rutas'}</h2><div class="empty"><span class="e">🛠️</span>Este módulo llega en la ${ROLE === 'cartera' ? 'Fase 8 (cartera y recaudo)' : 'Fase 9 (logística)'}.</div>`;
 
