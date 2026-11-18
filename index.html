@@ -321,10 +321,44 @@ function pintarRed() {
   el.innerHTML = !navigator.onLine ? '📵 Sin señal' + (n ? ' · ' + n + ' por enviar' : '') : n ? '⏫ ' + n + ' por enviar' : '';
   el.style.display = el.innerHTML ? '' : 'none';
 }
-// Envía un pedido completo en una sola operación (script 006). Si la base aún no lo tiene, error claro.
-async function rpcPedido(args) {
-  let r; try { r = await sb.rpc('registrar_pedido', args); } catch (e) { r = { error: e }; }
+async function rpcX(nombre, args) { try { return await sb.rpc(nombre, args); } catch (e) { return { error: e }; } }
+const faltaScript = (e, n) => /Could not find the function|schema cache/i.test((e && e.message) || '') ? 'Falta correr el script ' + n + ' en Supabase' : null;
+// Envía un pedido completo en una sola operación (script 006)
+const rpcPedido = args => rpcX('registrar_pedido', args);
+const esPend = id => colaGet().some(x => x.id === id);
+// Cambio de estado: si el servidor dice que no se puede pero el pedido ya quedó en ese estado
+// (porque el primer intento sí llegó), se da por enviado
+async function enviarEstado(it) {
+  const r = await rpcX('cambiar_estado_pedido', it.args);
+  if (r.error && !esRed(r.error)) {
+    try { const { data } = await sb.from('pedidos').select('estado').eq('id', it.args.p_pedido).maybeSingle();
+      if (data && data.estado === it.args.p_estado) return { data: {} }; } catch (e) {}
+  }
   return r;
+}
+// Cliente nuevo: antes de enviarlo, si no se buscó el documento, se busca y se completan los datos solos
+async function enviarCliente(it) {
+  if (!it.nit) {
+    try {
+      const reg = await consultarNIT(it.args.numero_documento);
+      if (reg) {
+        const d = it.args, escrito = (d.razon_social || '').trim();
+        if (reg.nombre) { d.razon_social = reg.nombre; if (!d.nombre_comercial && escrito && escrito.toUpperCase() !== reg.nombre.toUpperCase()) d.nombre_comercial = escrito; }
+        if (reg.sigla && !d.nombre_comercial) d.nombre_comercial = reg.sigla;
+        if (reg.tipo) d.tipo_documento = reg.tipo;
+        if (reg.dv) d.digito_verificacion = reg.dv;
+      }
+      it.nit = true;
+    } catch (e) { /* el registro público no respondió: se envía con lo que escribió el vendedor */ }
+  }
+  return rpcX('registrar_cliente', { p_id: it.id, p_datos: it.args, p_autor: it.dueno });
+}
+function enviarPend(it) {
+  if (it.tipo === 'pedido') return rpcPedido({ ...it.args, p_autor: it.dueno });
+  if (it.tipo === 'cliente') return enviarCliente(it);
+  if (it.tipo === 'estado') return enviarEstado(it);
+  if (it.tipo === 'entrada') return rpcX('registrar_entrada', { ...it.args, p_autor: it.dueno });
+  return rpcVenta({ ...it.args, p_vendedor: it.dueno });
 }
 // Envía una venta a nombre de quien la hizo. Si la base aún no tiene el script 005, se envía sin ese dato
 // (es seguro: solo se envían ventas del usuario conectado).
@@ -341,15 +375,25 @@ async function syncCola(manual) {
   if (!ME) return;
   if (SYNC || !navigator.onLine) { if (manual && !SYNC) toast('Sin señal: se enviarán cuando vuelva', true); return; }
   let c = colaGet(); if (!c.length) return;
-  SYNC = true; let ok = 0;
+  SYNC = true; let ok = 0; const faltan = [];
   try {
     for (const it of [...c]) {
-      const r = it.tipo === 'pedido' ? await rpcPedido({ ...it.args, p_autor: it.dueno }) : await rpcVenta({ ...it.args, p_vendedor: it.dueno });
-      if (r.error) { if (esRed(r.error)) break; it.error = friendly(r.error); continue; }
-      ok++; c = c.filter(x => x.id !== it.id);
+      if (!c.includes(it)) continue;
+      // Si depende de un cliente nuevo que no se pudo crear, espera con el mismo motivo
+      const base = c.find(x => x.tipo === 'cliente' && x.error && it.args && it.args.p_cliente === x.id);
+      if (base && base !== it) { it.error = 'El cliente nuevo no se pudo crear: ' + base.error; continue; }
+      const r = await enviarPend(it);
+      if (r.error) { if (esRed(r.error)) break; it.error = faltaScript(r.error, it.tipo === 'pedido' ? '006' : ['cliente','entrada'].includes(it.tipo) ? '007' : '005') || friendly(r.error); continue; }
+      if (it.tipo === 'cliente' && r.data && r.data[0] && r.data[0].cliente_id !== it.id) {
+        // Ya existía con ese documento: lo pendiente queda a nombre del cliente existente
+        const real = r.data[0].cliente_id; c.forEach(x => { if (x.args && x.args.p_cliente === it.id) x.args.p_cliente = real; });
+      }
+      if (it.tipo === 'estado' && r.data && r.data.sin_existencias && r.data.sin_existencias.length) faltan.push(...r.data.sin_existencias.map(f => nice(f.producto)));
+      ok++; c = c.filter(x => x !== it);
     }
   } finally { colaSet(c); SYNC = false; }
-  if (ok) { toast(ok + (ok > 1 ? ' pendientes enviados' : ' pendiente enviado')); if (['contado','inicio','pedidos'].includes(tab)) refresh(); }
+
+  if (ok) { toast(ok + (ok > 1 ? ' pendientes enviados' : ' pendiente enviado') + (faltan.length ? '. Ojo: se despachó sin existencias suficientes de ' + faltan.join(', ') : ''), !!faltan.length); if (tab && $('#view')) refresh(); }
   else if (manual && c.some(x => x.error)) toast('Hay pendientes con error: revisa Pedidos o Contado', true);
 }
 window.addEventListener('online', () => { pintarRed(); syncCola(); });
@@ -396,8 +440,7 @@ async function logout(forzar) {
     const pend = colaGet();
     if (pend.length) {
       const soloErrores = navigator.onLine && pend.every(x => x.error);
-      const nP = pend.filter(x => x.tipo === 'pedido').length, nV = pend.length - nP;
-      const que = [nV ? nV + (nV > 1 ? ' ventas' : ' venta') : '', nP ? nP + (nP > 1 ? ' pedidos' : ' pedido') : ''].filter(Boolean).join(' y ');
+      const que = resumenPend(pend);
       sheet(`<h2>⚠️ Tienes ${que} sin enviar</h2>
       <div class="mut">Antes de salir hay que enviarlos, para que no se pierdan ni queden a nombre de otra persona.</div>
       ${soloErrores ? `<div class="note warnnote">${pend.map(x => '⚠️ ' + esc(x.error)).join('<br>')}<br><br>El servidor no las aceptó. Puedes salir: quedan guardadas en este celular y se reintentan cuando vuelvas a entrar con tu usuario. Avísale a la administración.</div>`
@@ -434,23 +477,58 @@ async function loadMe() {
   C.prod = Object.fromEntries(CAT.map(p => [p.id, p]));
   shell(); await go(TABS[ROLE][0][0]); pintarRed(); syncCola(); precargar();
 }
+function resumenPend(pend) {
+  const N = { venta: ['venta','ventas'], pedido: ['pedido','pedidos'], cliente: ['cliente nuevo','clientes nuevos'], estado: ['cambio de pedido','cambios de pedidos'], entrada: ['entrada de mercancía','entradas de mercancía'] };
+  const k = {}; pend.forEach(x => { const t = x.tipo || 'venta'; k[t] = (k[t] || 0) + 1; });
+  const l = Object.entries(k).map(([t, n]) => n + ' ' + N[t][n > 1 ? 1 : 0]);
+  return l.length > 1 ? l.slice(0, -1).join(', ') + ' y ' + l.at(-1) : l[0];
+}
 // Con señal, deja guardado en el celular lo necesario para vender y tomar pedidos sin señal
 async function precargar() {
-  if (!navigator.onLine || !['vendedor','administrador'].includes(ROLE)) return;
-  const quien = ME.id;
+  if (!navigator.onLine || !ME) return;
+  const quien = ME.id, sigue = () => ME && ME.id === quien && navigator.onLine;
+  const paso = async (k, f) => { if (sigue()) await cached(k, f).catch(() => {}); };
   SILENCIO++;
   try {
-    const clis = await cached('dpd_clis', leerClientes);
-    C.clis = { ...(C.clis || {}), ...Object.fromEntries(clis.map(c => [c.id, c])) };
-    await loadCatalog(null, true);
-    if (ROLE === 'vendedor') await cached('dpd_peds_todos', () => loadPedidos()).catch(() => {});
-    const vistas = new Set();
-    for (const c of clis) {
-      if (!ME || ME.id !== quien || !navigator.onLine) break;
-      const k = c.lista_precio_id || c.id; if (vistas.has(k)) continue; vistas.add(k);
-      await loadCatalog(c.id, true);
+    if (['vendedor','administrador','gerencia'].includes(ROLE)) {
+      const clis = await cached('dpd_clis', leerClientes).catch(() => []);
+      C.clis = { ...(C.clis || {}), ...Object.fromEntries(clis.map(c => [c.id, c])) };
+      const listas = await cached('dpd_listas', LD.listas).catch(() => []);
+      if (ROLE !== 'gerencia') {
+        await loadCatalog(null, true).catch(() => {});
+        let conLista = true;
+        for (const l of listas) { if (!sigue()) break;
+          try { await cached('dpd_cat_l_' + l.id, () => q(sb.rpc('catalogo_lista', { p_lista: l.id }))); } catch (e) { conLista = false; break; } }
+        if (!conLista) {   // base sin el script 007: se guarda por cliente
+          const vistas = new Set();
+          for (const c of clis) { if (!sigue()) break; const k = c.lista_precio_id || c.id; if (vistas.has(k)) continue; vistas.add(k); await loadCatalog(c.id, true).catch(() => {}); }
+        }
+      }
     }
-  } catch (e) {} finally { SILENCIO--; }
+    if (['administrador','gerencia'].includes(ROLE)) { await paso('dpd_rutas', LD.rutas); await paso('dpd_vends', LD.vends); await paso('dpd_peds_enviado', () => loadPedidos(['enviado'])); }
+    if (['vendedor','cartera','conductor','cliente'].includes(ROLE)) await paso('dpd_peds_todos', () => loadPedidos());
+    if (['administrador','gerencia','vendedor','cartera'].includes(ROLE)) await paso('dpd_cliview', LD.cliView);
+    if (['administrador','bodega'].includes(ROLE)) { await paso('dpd_alistar', LD.alistar); await paso('dpd_stock', LD.stock); await paso('dpd_movs', LD.movs); }
+    if (ROLE === 'cliente') await loadCatalog(null, true).catch(() => {});
+  } finally { SILENCIO--; }
+}
+// Consultas que se guardan en el celular (mismo nombre en la pantalla y en la precarga)
+const LD = {
+  listas: () => q(sb.from('listas_precio').select('id,nombre').order('nombre')),
+  rutas: () => q(sb.from('rutas').select('id,nombre').order('nombre')),
+  vends: () => q(sb.from('vendedores').select('perfil_id,perfiles(nombre)')),
+  cliView: () => q(sb.from('clientes').select('id,razon_social,numero_documento,tipo_documento,telefono,direccion,municipio,cupo,plazo_dias,activo,rutas(nombre),listas_precio(nombre)').order('razon_social')),
+  alistar: () => loadPedidos(['aprobado','en_alistamiento']),
+  stock: () => q(sb.from('stock_actual').select('producto_id,cantidad')),
+  movs: () => q(sb.from('movimientos_inventario').select('producto_id,cantidad,creado_en,nota').eq('tipo', 'entrada').order('creado_en', { ascending: false }).limit(10)),
+};
+// Clientes guardados + los creados sin señal que aún no se han enviado
+function conPendientes(clis) {
+  const listas = lsGet(uk('dpd_listas')) || [], tiendas = (listas.find(l => l.nombre === 'Tiendas') || listas[0] || {}).id;
+  const nuevos = colaGet().filter(x => x.tipo === 'cliente' && !clis.some(c => c.id === x.id)).map(x => ({ id: x.id, razon_social: x.args.razon_social, direccion: x.args.direccion,
+    tipo_documento: x.args.tipo_documento, numero_documento: x.args.numero_documento, telefono: x.args.telefono, municipio: x.args.municipio, cupo: 0,
+    lista_precio_id: x.args.lista_precio_id || tiendas, _pend: x }));
+  return [...nuevos, ...clis];
 }
 const leerClientes = () => q(sb.from('clientes').select('id,razon_social,direccion,cupo,lista_precio_id,tipo_documento,numero_documento').eq('activo', true).order('razon_social'));
 
@@ -468,7 +546,7 @@ async function go(t) {
   $('#view').innerHTML = '<div class="empty"><span class="e spin">🥖</span>Cargando…</div>';
   renderCart();
   try { $('#view').innerHTML = await (V[tab] || (async () => ''))(); }
-  catch (e) { $('#view').innerHTML = `<div class="empty"><span class="e">⚠️</span>${esc(friendly(e))}<br><br><button class="btn sm sec" onclick="go(tab)">Reintentar</button></div>`; }
+  catch (e) { $('#view').innerHTML = `<div class="empty"><span class="e">${esRed(e) ? '📵' : '⚠️'}</span>${esRed(e) ? (['usuarios','precios'].includes(t) ? 'Esta pantalla necesita señal (crear usuarios, precios y fotos se hacen con internet).' : 'Sin señal, y esta pantalla aún no está guardada en el celular. Ábrela una vez con señal y después funcionará sin señal.') : esc(friendly(e))}<br><br><button class="btn sm sec" onclick="go(tab)">Reintentar</button></div>`; }
   renderCart();
 }
 const refresh = () => go(tab);
@@ -488,7 +566,9 @@ function bgc2(p) { return fotoDe(p) ? '#fff' : bgc_(adapt(p)); }
 async function loadCatalog(cliente, soloGuardar) {
   const cl = cliente && C.clis && C.clis[cliente];
   const llave = !cliente ? 'gen' : cl && cl.lista_precio_id ? 'l_' + cl.lista_precio_id : cliente;
-  const data = await cached('dpd_cat_' + llave, () => q(sb.rpc('catalogo', cliente ? { p_cliente: cliente } : {})));
+  const data = await cached('dpd_cat_' + llave, () => cl && cl._pend
+    ? q(sb.rpc('catalogo_lista', { p_lista: cl.lista_precio_id }))
+    : q(sb.rpc('catalogo', cliente ? { p_cliente: cliente } : {})));
   if (soloGuardar) return;
   C.cat = data; C.catBy = Object.fromEntries(data.map(x => [x.producto_id, x]));
 }
@@ -538,7 +618,7 @@ async function sendOrder() {
   const cli = ROLE === 'cliente' ? null : C.cli, dsc = +($('#dsc')?.value || 0), id = nuevoId();
   const args = { p_id: id, p_cliente: ROLE === 'cliente' ? ME.cliente_id : cli.id, p_items: cartItems().map(i => ({ producto_id: i.id, cantidad: i.n })),
     p_descuento: dsc, p_fecha_entrega: $('#fen').value || null, p_obs: $('#obs').value || null, p_fecha: new Date().toISOString(), p_autor: ME.id };
-  const r = await rpcPedido(args);
+  const r = esPend(args.p_cliente) ? { error: { message: 'Failed to fetch' } } : await rpcPedido(args);
   if (r.error && !esRed(r.error)) {
     toast(/registrar_pedido|schema cache/i.test(r.error.message || '') ? 'Falta correr el script 006 en Supabase' : friendly(r.error), true);
     b.disabled = false; b.textContent = '📤 Enviar pedido'; return;
@@ -548,7 +628,7 @@ async function sendOrder() {
     const resumen = { id, fecha: args.p_fecha, cliente: cli ? cli.razon_social : (ME.nombre || ''), desc: dsc,
       lineas: cartItems().map(i => ({ producto_id: i.id, n: i.n, precio: i.p.precio })), obs: args.p_obs };
     colaSet([...colaGet(), { id, dueno: ME.id, tipo: 'pedido', args, pedido: resumen }]);
-    cart = {}; closeSheet(); toast('📵 Sin señal: el pedido quedó guardado y se enviará solo'); go('pedidos'); return;
+    cart = {}; closeSheet(); toast(navigator.onLine ? '⏫ Pedido guardado: se envía junto con el cliente nuevo' : '📵 Sin señal: el pedido quedó guardado y se enviará solo'); go('pedidos'); syncCola(); return;
   }
   cart = {}; closeSheet(); toast('Pedido #' + r.data[0].numero + ' enviado'); go('pedidos');
 }
@@ -569,6 +649,8 @@ async function loadPedidos(estados) {
 }
 const thumbs = p => `<div style="display:flex;margin:10px 0 4px">${p.pedido_items.slice(0, 4).map((i, k) => `<div class="th" style="width:40px;height:40px;border-radius:12px;background:${bgc2(P(i.producto_id))};margin-left:${k ? -8 : 0}px;border:2px solid #fff">${art2(P(i.producto_id))}</div>`).join('')}${p.pedido_items.length > 4 ? `<div class="th" style="width:40px;height:40px;background:var(--line);margin-left:-8px;border:2px solid #fff;font-weight:900;font-size:12px">+${p.pedido_items.length - 4}</div>` : ''}</div>`;
 function pedCard(p, i = 0) {
+  const pe = colaGet().filter(x => x.tipo === 'estado' && x.args.p_pedido === p.id).pop();
+  if (pe) p = { ...p, estado: pe.args.p_estado };
   const acts = [];
   const A = (est, label, cls = '') => acts.push(`<button class="btn sm ${cls}" onclick="estado('${p.id}','${est}')">${label}</button>`);
   if (['administrador','gerencia'].includes(ROLE) && p.estado === 'enviado') { A('rechazado', 'Rechazar', 'sec'); A('aprobado', '✓ Aprobar', 'okb'); }
@@ -578,6 +660,7 @@ function pedCard(p, i = 0) {
   if (p.estado === 'enviado' && ((ROLE === 'cliente' && p.origen === 'cliente') || (ROLE === 'vendedor' && p.vendedor_id === ME.id))) A('cancelado', 'Cancelar', 'sec');
   const over = ['administrador','gerencia'].includes(ROLE) && p.estado === 'enviado' && p.clientes && +p.clientes.cupo > 0 && pedTotal(p) > +p.clientes.cupo;
   return `<div class="card" ${dl(i)}><div class="row"><b class="serif" style="font-size:18px">Pedido #${p.numero}</b>${badge(p.estado)}</div>
+  ${pe ? `<div class="note ${pe.error ? 'warnnote' : ''}" style="margin-top:6px">${pe.error ? '⚠️ No se pudo pasar a ' + EST[pe.args.p_estado][0].toLowerCase() + ': ' + esc(pe.error) + `<br><button class="btn sm sec" style="margin-top:6px" onclick="quitarPend('${pe.id}')">Quitar este cambio</button>` : '⏫ Cambio guardado sin señal: se envía solo'}</div>` : ''}
   <div class="mut" style="margin-top:2px">${esc(p.clientes?.razon_social || '')} · ${fdate(p.fecha)}${p.fecha_entrega ? ' · entrega ' + fdate(p.fecha_entrega + 'T12:00') : ''}</div>
   ${thumbs(p)}${track(p.estado)}
   ${over ? `<div class="note warnnote">⚠️ Este pedido supera el cupo del cliente (${fmt(p.clientes.cupo)})</div>` : ''}
@@ -593,7 +676,7 @@ function pedPendCard(x, i = 0) {
   <div class="row" style="margin-top:10px"><span class="big" style="font-size:20px">≈ ${fmt(tot)}</span>${x.error ? `<button class="btn sm sec" onclick="quitarPend('${x.id}')">Quitar</button>` : `<button class="btn sm" onclick="syncCola(true)">⏫ Enviar ahora</button>`}</div></div>`;
 }
 function quitarPend(id) {
-  sheet(`<h2>¿Quitar este pedido?</h2><div class="mut">El sistema no lo aceptó. Si lo quitas, se borra de este celular; puedes volver a tomarlo corregido.</div>
+  sheet(`<h2>¿Quitarlo de los pendientes?</h2><div class="mut">El sistema no lo aceptó. Si lo quitas, se borra de este celular y puedes volver a hacerlo corregido.</div>
   <div class="grid2"><button class="btn sec" onclick="closeSheet()">No</button><button class="btn" onclick="colaSet(colaGet().filter(x=>x.id!=='${id}'));closeSheet();refresh()">Sí, quitar</button></div>`);
 }
 function verPed(id) {
@@ -609,8 +692,11 @@ async function estado(id, est) {
   const p = C.ped[id];
   let r; try { r = await sb.rpc('cambiar_estado_pedido', { p_pedido: id, p_estado: est }); } catch (e) { r = { error: e }; }
   if (r.error) {
-    toast(esRed(r.error) ? 'Sin conexión: el pedido #' + p.numero + ' no cambió. Intenta de nuevo cuando tengas señal.' : friendly(r.error), true);
-    return;
+    if (!esRed(r.error)) return toast(friendly(r.error), true);
+    // Sin señal: el cambio queda guardado y se envía solo
+    colaSet([...colaGet(), { id: nuevoId(), dueno: ME.id, tipo: 'estado', args: { p_pedido: id, p_estado: est }, numero: p.numero }]);
+    toast('📵 Sin señal: pedido #' + p.numero + ' quedará ' + EST[est][0].toLowerCase() + ' al volver la señal');
+    refresh(); return;
   }
   // El servidor descuenta el inventario en la misma operación del despacho y avisa si faltaron existencias
   const falt = (r.data && r.data.sin_existencias) || [];
@@ -627,7 +713,7 @@ const V = {};
 V.inicio = async () => {
   // El avance lo calcula el servidor: pedidos aprobados en adelante + ventas de contado del mes, solo de este vendedor
   const [peds, av] = await Promise.all([
-    cached('dpd_peds', () => loadPedidos()).catch(() => []),
+    cached('dpd_peds', () => loadPedidos()).then(d => { C.ped = { ...(C.ped || {}), ...Object.fromEntries(d.map(p => [p.id, p])) }; return d; }).catch(() => []),
     cached('dpd_avance', () => q(sb.rpc('avance_vendedor'))).catch(() => null)]);
   const a = (Array.isArray(av) ? av[0] : av) || {};
   const venta = +a.total || 0, meta = +a.meta || 0, pct = meta ? Math.min(100, venta / meta * 100) : 0;
@@ -645,7 +731,7 @@ V.inicio = async () => {
 const ring = pct => { const r = 34, c = 2 * Math.PI * r; return `<svg class="ring" width="86" height="86" viewBox="0 0 86 86"><circle cx="43" cy="43" r="${r}" stroke="rgba(255,255,255,.15)" stroke-width="10" fill="none"/><circle cx="43" cy="43" r="${r}" stroke="#F6C552" stroke-width="10" fill="none" stroke-linecap="round" stroke-dasharray="${c}" stroke-dashoffset="${c * (1 - pct / 100)}" transform="rotate(-90 43 43)"/><text x="43" y="49" text-anchor="middle" fill="#fff" font-size="17" font-weight="900" font-family="Nunito Sans">${Math.round(pct)}%</text></svg>`; };
 
 V.vender = async () => {
-  const clis = await cached('dpd_clis', leerClientes);
+  const clis = conPendientes(await cached('dpd_clis', leerClientes));
   C.clis = Object.fromEntries(clis.map(c => [c.id, c]));
   if (!clis.length) return `<h2>Nuevo pedido</h2><div class="empty"><span class="e">👥</span>${ROLE === 'vendedor' ? 'Aún no tienes clientes asignados. Pídele a la administración que te asigne una ruta o clientes.' : 'Primero crea un cliente en la pestaña Clientes.'}</div>`;
   if (!C.cli || !C.clis[C.cli.id]) C.cli = null;
@@ -674,26 +760,31 @@ V.pedidos = async () => {
   return `<div class="row"><h2>${title}</h2><button class="btn sm sec" onclick="refresh()">↻</button></div>${segH}${sinLista ? '<div class="note warnnote">📵 Sin señal: la lista de pedidos se verá cuando vuelva la señal. Puedes seguir tomando pedidos.</div>' : ''}${pend.map(pedPendCard).join('')}${peds.map(pedCard).join('') || (pend.length || sinLista ? '' : '<div class="empty"><span class="e">🧺</span>No hay pedidos aquí</div>')}`;
 };
 V.alistar = async () => {
-  const peds = await loadPedidos(['aprobado','en_alistamiento']);
+  const peds = await cached('dpd_alistar', LD.alistar);
+  C.ped = { ...(C.ped || {}), ...Object.fromEntries(peds.map(p => [p.id, p])) };
   return `<div class="row"><h2>Pedidos para alistar</h2><button class="btn sm sec" onclick="refresh()">↻</button></div>${peds.map(pedCard).join('') || '<div class="empty"><span class="e">😌</span>No hay pedidos aprobados por alistar</div>'}`;
 };
 V.recibir = async () => {
-  const movs = await q(sb.from('movimientos_inventario').select('producto_id,cantidad,creado_en,nota').eq('tipo', 'entrada').order('creado_en', { ascending: false }).limit(10));
+  const movs = await cached('dpd_movs', LD.movs).catch(e => { if (!esRed(e)) throw e; return []; });
+  const pend = colaGet().filter(x => x.tipo === 'entrada');
   return `${ROUTE_BANNER.replace('Recién llegado de Bogotá', 'Llegó el camión').replace('Pan fresco rumbo a tu tienda en el Llano 🚚', 'Registra lo que llegó de Bogotá')}
   <div class="card"><label style="margin-top:0">Producto</label><select id="rp">${CAT.map(p => `<option value="${p.id}">${nm(p)}</option>`).join('')}</select>
   <label>Cantidad recibida</label><input id="rq" type="number" inputmode="numeric" min="1" value="12" style="font-size:22px;font-weight:900">
   <label>Remisión o factura de origen</label><input id="rd" placeholder="Opcional">
   <div style="height:14px"></div><button class="btn" onclick="recibir()">➕ Agregar al inventario</button></div>
-  <h3>Últimas entradas</h3>${movs.map((m, i) => { const p = P(m.producto_id); return `<div class="card" ${dl(i)}><div class="li" style="padding:0;border:0">${pArtP(p)}<div class="pn"><b>${nm(p)}</b><span>${fdate(m.creado_en)}${m.nota ? ' · ' + esc(m.nota) : ''}</span></div><span class="badge b-ok">+${+m.cantidad}</span></div></div>`; }).join('') || '<div class="empty"><span class="e">🚛</span>Aún no hay entradas</div>'}`;
+  <h3>Últimas entradas</h3>${pend.map(x => { const p = P(x.args.p_producto); return `<div class="card" style="border:2px dashed #D9486A"><div class="li" style="padding:0;border:0">${pArtP(p)}<div class="pn"><b>${nm(p)}</b><span>${x.error ? '⚠️ ' + esc(x.error) : '📵 Por enviar'}${x.args.p_nota ? ' · ' + esc(x.args.p_nota) : ''}</span></div><span class="badge b-pend">+${+x.args.p_cantidad}</span></div>${x.error ? `<button class="btn sm sec" style="margin-top:8px" onclick="quitarPend('${x.id}')">Quitar</button>` : ''}</div>`; }).join('')}${movs.map((m, i) => { const p = P(m.producto_id); return `<div class="card" ${dl(i)}><div class="li" style="padding:0;border:0">${pArtP(p)}<div class="pn"><b>${nm(p)}</b><span>${fdate(m.creado_en)}${m.nota ? ' · ' + esc(m.nota) : ''}</span></div><span class="badge b-ok">+${+m.cantidad}</span></div></div>`; }).join('') || '<div class="empty"><span class="e">🚛</span>Aún no hay entradas</div>'}`;
 };
 async function recibir() {
   const n = +$('#rq').value; if (!(n > 0)) return toast('Escribe una cantidad', true);
-  const bod = (await q(sb.from('bodegas').select('id').limit(1)))[0];
-  await q(sb.from('movimientos_inventario').insert({ bodega_id: bod.id, producto_id: $('#rp').value, tipo: 'entrada', cantidad: n, referencia_tipo: 'recepcion', nota: $('#rd').value || null }));
-  toast('Entrada guardada'); refresh();
+  const id = nuevoId(), args = { p_id: id, p_producto: $('#rp').value, p_cantidad: n, p_nota: $('#rd').value || null };
+  const r = await rpcX('registrar_entrada', { ...args, p_autor: ME.id });
+  if (r.error && !esRed(r.error)) return toast(faltaScript(r.error, '007') || friendly(r.error), true);
+  if (r.error) { colaSet([...colaGet(), { id, dueno: ME.id, tipo: 'entrada', args }]); toast('📵 Sin señal: la entrada quedó guardada y se sumará sola'); }
+  else toast('Entrada guardada');
+  refresh();
 }
 V.inventario = async () => {
-  const st = await q(sb.from('stock_actual').select('producto_id,cantidad'));
+  const st = await cached('dpd_stock', LD.stock);
   const by = {}; st.forEach(s => by[s.producto_id] = (by[s.producto_id] || 0) + +s.cantidad);
   sub.inv = sub.inv || 'bajo';
   const l = CAT.filter(p => sub.inv === 'todo' || (by[p.id] || 0) < 10); const mx = Math.max(1, ...Object.values(by));
@@ -701,11 +792,12 @@ V.inventario = async () => {
   <div class="card">${l.map(p => { const s = by[p.id] || 0; return `<div class="li">${pArtP(p)}<div class="pn"><b>${nm(p)}</b><div class="bar"><i style="width:${Math.max(3, s / mx * 100)}%;${s < 10 ? 'background:linear-gradient(90deg,#E0603F,#B3321E)' : ''}"></i></div></div><span class="badge ${s < 10 ? 'b-bad' : 'b-ok'}">${s}</span></div>`; }).join('')}</div>`;
 };
 V.resumen = async () => {
-  const peds = await loadPedidos();
+  const peds = await cached('dpd_peds_resumen', () => loadPedidos());
+  C.ped = { ...(C.ped || {}), ...Object.fromEntries(peds.map(p => [p.id, p])) };
   const nPend = peds.filter(p => p.estado === 'enviado').length;
   const mes = new Date(); mes.setDate(1);
   const vMes = peds.filter(p => new Date(p.fecha) >= mes && ['aprobado','en_alistamiento','despachado','entregado','entregado_parcial'].includes(p.estado)).reduce((a, p) => a + pedTotal(p), 0);
-  const { count: nCli } = await sb.from('clientes').select('id', { count: 'exact', head: true });
+  let nCli = 0; try { nCli = (lsGet(uk('dpd_cliview')) || []).length; const r = await sb.from('clientes').select('id', { count: 'exact', head: true }); if (!r.error) nCli = r.count; } catch (e) {}
   const byL = {}; peds.filter(p => !['rechazado','cancelado','borrador'].includes(p.estado)).forEach(p => p.pedido_items.forEach(i => { const l = P(i.producto_id).linea; byL[l] = (byL[l] || 0) + i.cantidad * i.precio_unitario; }));
   const ent = Object.entries(byL).sort((a, b) => b[1] - a[1]).slice(0, 6), mx = ent.length ? ent[0][1] : 1;
   const COL = ['#C8553D','#E39B2D','#4E8B3A','#2F6EA5','#C2456E','#8A5230'];
@@ -858,15 +950,21 @@ async function doRecalc(pct) {
   await q(sb.from('precios_lista').upsert(rows)); closeSheet(); toast('Lista actualizada'); refresh();
 }
 V.clientes = async () => {
-  const clis = await q(sb.from('clientes').select('id,razon_social,numero_documento,tipo_documento,telefono,direccion,municipio,cupo,plazo_dias,activo,rutas(nombre),listas_precio(nombre)').order('razon_social'));
-  const canEdit = ['administrador','gerencia'].includes(ROLE);
+  const clis = await cached('dpd_cliview', LD.cliView);
+  const canEdit = ['administrador','gerencia','vendedor'].includes(ROLE);
+  const pend = colaGet().filter(x => x.tipo === 'cliente');
   return `<div class="row"><h2>Clientes</h2>${canEdit ? '<button class="btn sm" onclick="nuevoCliente()">＋ Nuevo</button>' : ''}</div>
+  ${pend.map(x => `<div class="card" style="border:2px dashed #D9486A"><div class="row">${av(x.args.razon_social)}<div style="flex:1;min-width:0"><b>${esc(x.args.razon_social)}</b><div class="mut">${esc(x.args.tipo_documento)} ${esc(x.args.numero_documento)}</div></div><span class="badge b-pend">📵 Por enviar</span></div>
+   <div class="mut" style="margin-top:8px">${x.error ? '⚠️ ' + esc(x.error) : 'Ya le puedes vender. Se envía solo cuando haya señal' + (x.nit ? '.' : ' y, si el documento aparece en el registro, se completan los datos solos.')}</div>
+   ${x.error ? `<div class="acts"><button class="btn sm sec" onclick="quitarPend('${x.id}')">Quitar</button></div>` : ''}</div>`).join('')}
   ${clis.map((c, i) => `<div class="card" ${dl(i)}><div class="row">${av(c.razon_social, i)}<div style="flex:1;min-width:0"><b>${esc(c.razon_social)}</b><div class="mut">${esc(c.tipo_documento)} ${esc(c.numero_documento)}${c.telefono ? ' · 📞 ' + esc(c.telefono) : ''}</div></div>${c.rutas ? `<span class="badge b-mut">${esc(c.rutas.nombre)}</span>` : ''}</div>
    <div class="mut" style="margin-top:8px">📍 ${esc(c.direccion || 'Sin dirección')}, ${esc(c.municipio)}</div>
    <div class="mut">Lista ${esc(c.listas_precio?.nombre || '')} · cupo ${fmt(c.cupo)} · ${c.plazo_dias ? c.plazo_dias + ' días' : 'contado'}${c.activo ? '' : ' · <b style="color:var(--bad)">inactivo</b>'}</div></div>`).join('') || `<div class="empty"><span class="e">👥</span>${canEdit ? 'Aún no hay clientes. Toca ＋ Nuevo para crear el primero.' : 'No tienes clientes asignados todavía.'}</div>`}`;
 };
 async function nuevoCliente() {
-  const [rutas, listas, vends] = await Promise.all([q(sb.from('rutas').select('id,nombre').order('nombre')), q(sb.from('listas_precio').select('id,nombre').order('nombre')), q(sb.from('vendedores').select('perfil_id,perfiles(nombre)'))]);
+  const adm = ROLE !== 'vendedor';
+  const [rutas, listas, vends] = adm ? await Promise.all([cached('dpd_rutas', LD.rutas), cached('dpd_listas', LD.listas), cached('dpd_vends', LD.vends)]).catch(e => { if (esRed(e)) toast('Sin señal: abre Clientes una vez con señal para poder crear clientes', true); throw e; }) : [[], [], []];
+  C.nitOk = null;
   sheet(`<h2>Nuevo cliente</h2><form onsubmit="event.preventDefault();guardarCliente()">
   <div class="grid2"><div><label>Tipo</label><select id="c_td"><option>NIT</option><option>CC</option><option>CE</option></select></div><div><label>Número (sin dígito)</label><input id="c_nd" required inputmode="numeric" oninput="this.value=this.value.replace(/\D/g,'');calcDV()"></div></div>
   <div class="row" style="gap:8px;margin-top:8px"><div style="width:90px"><label style="margin-top:0">DV</label><input id="c_dv" inputmode="numeric" maxlength="1"></div><button type="button" class="btn sm" style="flex:1;margin-top:22px" id="c_bus" onclick="buscarNIT()">🔎 Buscar en Cámara de Comercio</button></div>
@@ -874,11 +972,12 @@ async function nuevoCliente() {
   <label>Razón social o nombre</label><input id="c_rs" required><label>Nombre del negocio</label><input id="c_nc">
   <div class="grid2"><div><label>Teléfono</label><input id="c_tel" inputmode="tel"></div><div><label>Correo de facturación</label><input id="c_em" type="email"></div></div>
   <label>Dirección</label><input id="c_dir"><label>Municipio</label><input id="c_mun" value="Yopal">
-  <label>Ruta</label><div class="row" style="gap:8px"><select id="c_ruta"><option value="">Sin ruta</option>${rutas.map(r => `<option value="${r.id}">${esc(r.nombre)}</option>`).join('')}</select><input id="c_nr" placeholder="o crea una nueva" style="flex:1"></div>
+  ${adm ? `<label>Ruta</label><div class="row" style="gap:8px"><select id="c_ruta"><option value="">Sin ruta</option>${rutas.map(r => `<option value="${r.id}">${esc(r.nombre)}</option>`).join('')}</select><input id="c_nr" placeholder="o crea una nueva" style="flex:1"></div>
   <label>Vendedor</label><select id="c_ven"><option value="">Sin vendedor</option>${vends.map(v => `<option value="${v.perfil_id}">${esc(v.perfiles?.nombre || '')}</option>`).join('')}</select>
   <label>Lista de precios</label><select id="c_lis">${listas.map(l => `<option value="${l.id}" ${l.nombre === 'Tiendas' ? 'selected' : ''}>${esc(l.nombre)}</option>`).join('')}</select>
   <div class="grid2"><div><label>Cupo de crédito ($)</label><input id="c_cupo" type="number" value="0"></div><div><label>Plazo (días)</label><input id="c_pla" type="number" value="0"></div></div>
   <label>Forma de pago habitual</label><select id="c_fp"><option value="contado">Contado</option><option value="credito">Crédito</option><option value="factura_contra_factura">Factura contra factura</option></select>
+  ` : `<div class="note" style="margin-top:12px">Queda en tu ruta, de contado y con la lista Tiendas. La administración puede darle cupo o cambiarle la lista.</div>`}
   <div style="height:16px"></div><button class="btn" id="c_btn">Guardar cliente</button></form>`);
 }
 function dvNIT(n) {
@@ -888,16 +987,31 @@ function dvNIT(n) {
   return String(r > 1 ? 11 - r : r);
 }
 function calcDV() { if ($('#c_td').value === 'NIT') $('#c_dv').value = dvNIT($('#c_nd').value); }
+// Busca el documento en el registro público de Cámaras de Comercio (datos.gov.co). null = no aparece; error = sin señal
+async function registrosNIT(n) {
+  const base = 'https://www.datos.gov.co/resource/c82u-588k.json?$limit=20&';
+  let fallas = 0;
+  const res = await Promise.all(['nit', 'numero_identificacion'].map(k => fetch(base + k + '=' + n).then(r => r.ok ? r.json() : []).catch(() => { fallas++; return []; })));
+  if (fallas === 2) throw new Error('Failed to fetch');
+  const vistos = new Set(), regs = res.flat().filter(r => { const k = r.camara_comercio + r.matricula; if (vistos.has(k)) return false; vistos.add(k); return true; });
+  regs.sort((x, y) => ((y.estado_matricula === 'ACTIVA') - (x.estado_matricula === 'ACTIVA')) || ((+y.ultimo_ano_renovado || 0) - (+x.ultimo_ano_renovado || 0)) || (/PRINCIPAL/.test(y.categoria_matricula || '') - /PRINCIPAL/.test(x.categoria_matricula || '')));
+  return regs;
+}
+async function consultarNIT(num) {
+  const n = String(num || '').replace(/\D/g, ''); if (n.length < 5) return null;
+  const r = (await registrosNIT(n))[0]; if (!r) return null;
+  return { nombre: (r.razon_social || [r.primer_nombre, r.segundo_nombre, r.primer_apellido, r.segundo_apellido].filter(Boolean).join(' ')).trim(), sigla: r.sigla || '',
+    tipo: /NIT/i.test(r.clase_identificacion || '') || r.nit === n ? 'NIT' : /CEDULA DE CIUDADANIA/i.test(r.clase_identificacion || '') ? 'CC' : '', dv: r.digito_verificacion || (r.nit === n ? dvNIT(n) : '') };
+}
 async function buscarNIT() {
   const n = $('#c_nd').value.replace(/\D/g, ''), b = $('#c_bus'), info = $('#c_info');
   if (n.length < 5) return toast('Escribe el número primero', true);
+  if (!navigator.onLine) { info.innerHTML = '<div class="note">📵 Sin señal: llena los datos a mano. Cuando vuelva la señal se busca solo y se completan los datos.</div>'; return; }
   b.disabled = true; b.textContent = 'Buscando…'; info.innerHTML = '';
   try {
-    const base = 'https://www.datos.gov.co/resource/c82u-588k.json?$limit=20&';
-    const res = await Promise.all(['nit', 'numero_identificacion'].map(k => fetch(base + k + '=' + n).then(r => r.ok ? r.json() : []).catch(() => [])));
-    const vistos = new Set(), regs = res.flat().filter(r => { const k = r.camara_comercio + r.matricula; if (vistos.has(k)) return false; vistos.add(k); return true; });
+    const regs = await registrosNIT(n);
+    C.nitOk = n;
     if (!regs.length) { info.innerHTML = '<div class="note warnnote">No aparece en el registro de Cámaras de Comercio. Puede ser una persona sin matrícula mercantil: llena los datos a mano.</div>'; return; }
-    regs.sort((x, y) => ((y.estado_matricula === 'ACTIVA') - (x.estado_matricula === 'ACTIVA')) || ((+y.ultimo_ano_renovado || 0) - (+x.ultimo_ano_renovado || 0)) || (/PRINCIPAL/.test(y.categoria_matricula || '') - /PRINCIPAL/.test(x.categoria_matricula || '')));
     const r = regs[0];
     const nombre = (r.razon_social || [r.primer_nombre, r.segundo_nombre, r.primer_apellido, r.segundo_apellido].filter(Boolean).join(' ')).trim();
     if (nombre) $('#c_rs').value = nombre;
@@ -910,20 +1024,25 @@ async function buscarNIT() {
       ${r.representante_legal ? '<br>Representante legal: ' + esc(r.representante_legal) : ''}${r.organizacion_juridica ? '<br>' + esc(r.organizacion_juridica) : ''}
       ${activa ? '' : '<br><b>Ojo:</b> la matrícula no está activa. Revisa antes de darle crédito.'}
       <br><span style="font-size:12px">Dirección y teléfono no vienen en el registro: escríbelos tú.</span></div>`;
-  } catch (e) { info.innerHTML = '<div class="note warnnote">No se pudo consultar el registro ahora. Llena los datos a mano.</div>'; }
+  } catch (e) { info.innerHTML = '<div class="note warnnote">No se pudo consultar el registro ahora. Llena los datos a mano; al guardar se intenta de nuevo.</div>'; }
   finally { b.disabled = false; b.textContent = '🔎 Buscar en Cámara de Comercio'; }
 }
 async function guardarCliente() {
-  const b = $('#c_btn'); b.disabled = true;
-  try {
-    let ruta = $('#c_ruta').value || null;
-    if ($('#c_nr').value.trim()) ruta = (await q(sb.from('rutas').insert({ nombre: $('#c_nr').value.trim() }).select('id').single())).id;
-    await q(sb.from('clientes').insert({ tipo_documento: $('#c_td').value, numero_documento: $('#c_nd').value.trim(), digito_verificacion: $('#c_dv').value || null, razon_social: $('#c_rs').value.trim(),
-      nombre_comercial: $('#c_nc').value || null, telefono: $('#c_tel').value || null, email_facturacion: $('#c_em').value || null, direccion: $('#c_dir').value || null,
-      municipio: $('#c_mun').value || 'Yopal', ruta_id: ruta, vendedor_id: $('#c_ven').value || null, lista_precio_id: $('#c_lis').value,
-      cupo: +$('#c_cupo').value || 0, plazo_dias: +$('#c_pla').value || 0, forma_pago_habitual: $('#c_fp').value }));
-    closeSheet(); toast('Cliente creado'); refresh();
-  } catch (e) { b.disabled = false; }
+  const b = $('#c_btn'), adm = ROLE !== 'vendedor', v = k => ($('#' + k) ? $('#' + k).value : '').trim();
+  const datos = { tipo_documento: v('c_td'), numero_documento: v('c_nd'), digito_verificacion: v('c_dv') || null, razon_social: v('c_rs'),
+    nombre_comercial: v('c_nc') || null, telefono: v('c_tel') || null, email_facturacion: v('c_em') || null, direccion: v('c_dir') || null, municipio: v('c_mun') || 'Yopal' };
+  if (adm) Object.assign(datos, { ruta_id: v('c_ruta') || null, ruta_nueva: v('c_nr') || null, vendedor_id: v('c_ven') || null, lista_precio_id: v('c_lis'),
+    cupo: +v('c_cupo') || 0, plazo_dias: +v('c_pla') || 0, forma_pago_habitual: v('c_fp') });
+  if (colaGet().some(x => x.tipo === 'cliente' && x.args.numero_documento === datos.numero_documento)) return toast('Ese documento ya está guardado como cliente nuevo', true);
+  b.disabled = true; b.textContent = 'Guardando…';
+  const it = { id: nuevoId(), dueno: ME.id, tipo: 'cliente', args: datos, nit: C.nitOk === datos.numero_documento.replace(/\D/g, '') };
+  const r = navigator.onLine ? await enviarCliente(it) : { error: { message: 'Failed to fetch' } };
+  if (r.error && !esRed(r.error)) { toast(faltaScript(r.error, '007') || friendly(r.error), true); b.disabled = false; b.textContent = 'Guardar cliente'; return; }
+  closeSheet();
+  if (r.error) { colaSet([...colaGet(), it]); toast('📵 Sin señal: cliente guardado. Ya le puedes vender; se envía solo'); }
+  else { toast(r.data[0].nuevo ? 'Cliente creado' : 'Ese cliente ya existía: quedó el que estaba registrado');
+    lsDel(uk('dpd_clis')); lsDel(uk('dpd_cliview')); }
+  refresh();
 }
 async function fn(body) {
   const { data, error } = await sb.functions.invoke('usuarios', { body });
@@ -1001,11 +1120,11 @@ const MEDIOS = [['efectivo','💵 Efectivo'],['nequi','📱 Nequi'],['transferen
 const MEDIO_N = Object.fromEntries(MEDIOS.map(([k, v]) => [k, v.replace(/^\S+\s/, '')]));
 const segV = (id, opts, on) => `<div class="seg" id="${id}">${opts.map(([v, n]) => `<button type="button" data-v="${v}" class="${v === on ? 'on' : ''}" onclick="[...this.parentNode.children].forEach(b=>b.classList.remove('on'));this.classList.add('on');${id === 'vmod' ? 'modVenta()' : ''}">${n}</button>`).join('')}</div>`;
 V.contado = async () => {
-  const clis = await cached('dpd_clis', leerClientes);
+  const clis = conPendientes(await cached('dpd_clis', leerClientes));
   C.clis = Object.fromEntries(clis.map(c => [c.id, c]));
   if (C.vcli && !C.clis[C.vcli]) C.vcli = '';
   await loadCatalog(C.vcli || null);
-  const cola = colaGet().filter(x => x.tipo !== 'pedido'), ajenas = colaAjenas().length, ini = new Date(); ini.setHours(0, 0, 0, 0);
+  const cola = colaGet().filter(x => !x.tipo || x.tipo === 'venta'), ajenas = colaAjenas().length, ini = new Date(); ini.setHours(0, 0, 0, 0);
   // Ventas de hoy: las registradas en la base (sirven en cualquier celular) + las que esperan señal en este
   const vs = await cached('dpd_ventas_hoy', () => q(sb.from('ventas')
     .select('id,numero,fecha,modalidad,medio_pago,clientes(razon_social,tipo_documento,numero_documento),venta_items(producto_id,cantidad,precio_unitario,descuento_pct)')
@@ -1062,7 +1181,7 @@ async function registrarVenta() {
   const t = { id, fecha, modalidad, medio, desc, vendedor: ME.nombre, numero: null, pendiente: true, total: totNeto(),
     cliente: cli ? { nombre: cli.razon_social, doc: `${cli.tipo_documento || ''} ${cli.numero_documento || ''}`.trim() } : null,
     lineas: cartItems().map(i => ({ nombre: i.p.nombre, n: i.n, precio: Math.round(i.p.precio * (1 - desc / 100) * 100) / 100 })) };
-  const r = await rpcVenta(args);
+  const r = esPend(args.p_cliente) ? { error: { message: 'Failed to fetch' } } : await rpcVenta(args);
   if (r.error) {
     if (!esRed(r.error)) { toast(friendly(r.error), true); b.disabled = false; b.textContent = '✓ Registrar venta'; return; }
     colaSet([...colaGet(), { id, dueno: ME.id, args, ticket: t }]);   // se guarda con su dueño y se envía después
