@@ -831,7 +831,7 @@ V.recepcion = async () => {
   return `<div class="row"><h2>${c ? 'Recibir compra' + (c.numero ? ' C-' + c.numero : '') : 'Recibir sin pedido'}</h2><button class="btn sm sec" onclick="go('recibir')">← Volver</button></div>
   <div class="card">${c ? `<div class="mut">${esc(c.proveedores?.nombre || '')}</div>` : `<label style="margin-top:0">Proveedor</label><select id="r_prov">${provs.filter(p => p.activo).map(p => `<option value="${p.id}">${esc(p.nombre)}</option>`).join('')}</select>`}
   <label${c ? '' : ''}>Remisión o factura de origen</label><input id="r_doc" placeholder="Ej: remisión 4455">
-  <div class="note" style="margin-top:10px">Escribe cuánto llegó <b>bien</b> y cuánto <b>dañado</b>. Lo dañado no se suma al inventario: queda anotado para el reclamo. El lote y la fecha de vencimiento vienen en el empaque.</div></div>
+  <div class="note" style="margin-top:10px">Escribe cuánto llegó <b>bien</b> y cuánto <b>dañado</b>. Lo dañado no se suma al inventario para vender: pasa a la zona de averías para devolverlo al proveedor. El lote y la fecha de vencimiento vienen en el empaque.</div></div>
   ${c ? '' : `<div class="card"><label style="margin-top:0">Agregar producto</label><div class="row" style="gap:8px"><select id="r_add" style="flex:1">${CAT.map(p => `<option value="${p.id}">${nm(p)}</option>`).join('')}</select><button class="btn sm" onclick="agregarLineaRec()">＋</button></div></div>`}
   <div id="r_lineas">${lineasRecHTML()}</div>
   <label>Observaciones</label><input id="r_obs" placeholder="Opcional">
@@ -1161,13 +1161,13 @@ V.averias = async () => {
   C.avDevSel = C.avDevSel || new Set(); C.avStock = stock; C.avProvs = provs; C.dps = Object.fromEntries(dps.map(d => [d.id, d]));
   const tot = stock.reduce((a, x) => a + +x.cantidad, 0);
   return `<div class="row"><h2>♻️ Averías</h2><button class="btn sm sec" onclick="go('inventario')">← Inventario</button></div>
-  <div class="note">El pan vencido o dañado que devuelven las tiendas. Se separa del inventario (no se puede vender) y se le devuelve a Yemapan.</div>
+  <div class="note">El pan vencido o dañado que devuelven las tiendas y lo que llega dañado de Bogotá. Se separa del inventario (no se puede vender) y se le devuelve al proveedor de cada producto.</div>
   <h3>1. Devoluciones por recibir en bodega</h3>
   ${devs.length ? `<div class="card">${devs.map(d => `<label class="li" style="cursor:pointer;margin:0">${puede ? `<input type="checkbox" style="width:22px;height:22px" ${C.avDevSel.has(d.id) ? 'checked' : ''} onchange="this.checked?C.avDevSel.add('${d.id}'):C.avDevSel.delete('${d.id}')">` : ''}<div class="pn"><b>${nm(P(d.producto_id))} × ${+d.cantidad}</b><span>${esc(d.cliente)} · ${MOTIVO[d.motivo] || d.motivo} · ${esc(d.quien)} · ${fdate(d.fecha)}</span></div></label>`).join('')}</div>
   ${puede ? '<button class="btn sm" onclick="recibirDevs()">✓ Recibir las marcadas</button>' : ''}` : '<div class="mut">No hay devoluciones pendientes. (Las que trae cada vendedor también se reciben al contar su cargue.)</div>'}
   <h3>2. En la zona de averías (${tot} unidades)</h3>
-  ${stock.length ? `<div class="card">${stock.map(x => `<div class="li">${pArtP(P(x.producto_id))}<div class="pn"><b>${nm(P(x.producto_id))}</b></div><span class="badge b-bad">${+x.cantidad}</span></div>`).join('')}</div>
-  ${puede ? '<button class="btn" onclick="formDevProv()">🚛 Devolver a Yemapan</button>' : ''}` : '<div class="mut">La zona de averías está vacía.</div>'}
+  ${stock.length ? `<div class="card">${stock.map(x => `<div class="li">${pArtP(P(x.producto_id))}<div class="pn"><b>${nm(P(x.producto_id))}</b>${x.proveedor ? `<span>Se devuelve a ${esc(x.proveedor)}</span>` : ''}</div><span class="badge b-bad">${+x.cantidad}</span></div>`).join('')}</div>
+  ${puede ? `<div class="grid2">${[...new Map(stock.filter(x => x.proveedor_id).map(x => [x.proveedor_id, x.proveedor])).entries()].map(([id, n]) => `<button class="btn" onclick="formDevProv('${id}')">🚛 Devolver a ${esc(n)}</button>`).join('') || '<button class="btn" onclick="formDevProv()">🚛 Devolver al proveedor</button>'}</div>` : ''}` : '<div class="mut">La zona de averías está vacía.</div>'}
   <h3>3. Devoluciones al proveedor</h3>
   ${dps.map(d => `<div class="card"><div class="row"><b>D-${d.numero} · ${esc(d.proveedores?.nombre || '')}</b><span class="badge ${d.estado === 'reconocida' ? 'b-ok' : 'b-pend'}">${d.estado === 'reconocida' ? 'Reconocida' : 'Entregada, por reconocer'}</span></div>
     <div class="mut">${fdate(d.fecha)} · ${d.devoluciones_proveedor_items.reduce((a, x) => a + +x.cantidad, 0)} unidades${d.valor_reconocido ? ' · reconocido ' + fmt(d.valor_reconocido) : ''}${d.nota ? ' · ' + esc(d.nota) : ''}</div>
@@ -1184,11 +1184,13 @@ async function recibirDevs() {
   if (r.error) return toast(esRed(r.error) ? 'Sin señal: esto se guarda con internet' : faltaScript(r.error, '012') || friendly(r.error), true);
   C.avDevSel = new Set(); ['dpd_devs','dpd_averias'].forEach(k => lsDel(uk(k))); toast(r.data + ' devoluciones recibidas en averías'); refresh();
 }
-function formDevProv() {
-  C.dpCant = Object.fromEntries(C.avStock.map(x => [x.producto_id, +x.cantidad]));
+function formDevProv(prov) {
+  prov = prov || (C.avStock[0] || {}).proveedor_id || (C.avProvs[0] || {}).id;
+  // Por defecto se devuelven los productos de ese proveedor; los demás quedan en 0
+  C.dpCant = Object.fromEntries(C.avStock.map(x => [x.producto_id, !x.proveedor_id || x.proveedor_id === prov ? +x.cantidad : 0]));
   sheet(`<h2>🚛 Devolver al proveedor</h2><div class="mut">Lo que se lleva o recoge el proveedor. Sale de la zona de averías.</div>
-  <label>Proveedor</label><select id="dp_p">${C.avProvs.filter(p => p.activo).map(p => `<option value="${p.id}">${esc(p.nombre)}</option>`).join('')}</select>
-  <div class="card" style="margin-top:12px">${C.avStock.map(x => `<div class="li"><div class="pn"><b>${nm(P(x.producto_id))}</b><span>Hay ${+x.cantidad}</span></div><input type="number" inputmode="numeric" min="0" max="${+x.cantidad}" style="width:84px;text-align:center" value="${+x.cantidad}" onchange="C.dpCant['${x.producto_id}']=+this.value||0"></div>`).join('')}</div>
+  <label>Proveedor</label><select id="dp_p" onchange="formDevProv(this.value)">${C.avProvs.filter(p => p.activo).map(p => `<option value="${p.id}" ${p.id === prov ? 'selected' : ''}>${esc(p.nombre)}</option>`).join('')}</select>
+  <div class="card" style="margin-top:12px">${C.avStock.map(x => `<div class="li"><div class="pn"><b>${nm(P(x.producto_id))}</b><span>Hay ${+x.cantidad}${x.proveedor ? ' · es de ' + esc(x.proveedor) : ''}</span></div><input type="number" inputmode="numeric" min="0" max="${+x.cantidad}" style="width:84px;text-align:center" value="${C.dpCant[x.producto_id]}" onchange="C.dpCant['${x.producto_id}']=+this.value||0"></div>`).join('')}</div>
   <label>Nota</label><input id="dp_n" placeholder="Ej: lo recogió el camión de Yemapan">
   <div style="height:14px"></div><button class="btn" id="dp_b" onclick="guardarDevProv()">✓ Registrar devolución</button>`);
 }
