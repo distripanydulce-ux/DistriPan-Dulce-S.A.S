@@ -358,6 +358,7 @@ function enviarPend(it) {
   if (it.tipo === 'cliente') return enviarCliente(it);
   if (it.tipo === 'estado') return enviarEstado(it);
   if (it.tipo === 'entrada') return rpcX('registrar_entrada', { ...it.args, p_autor: it.dueno });
+  if (it.tipo === 'cliente_upd') return rpcX('actualizar_cliente', { ...it.args, p_autor: it.dueno });
   return rpcVenta({ ...it.args, p_vendedor: it.dueno });
 }
 // Envía una venta a nombre de quien la hizo. Si la base aún no tiene el script 005, se envía sin ese dato
@@ -383,10 +384,10 @@ async function syncCola(manual) {
       const base = c.find(x => x.tipo === 'cliente' && x.error && it.args && it.args.p_cliente === x.id);
       if (base && base !== it) { it.error = 'El cliente nuevo no se pudo crear: ' + base.error; continue; }
       const r = await enviarPend(it);
-      if (r.error) { if (esRed(r.error)) break; it.error = faltaScript(r.error, it.tipo === 'pedido' ? '006' : ['cliente','entrada'].includes(it.tipo) ? '007' : '005') || friendly(r.error); continue; }
+      if (r.error) { if (esRed(r.error)) break; it.error = faltaScript(r.error, it.tipo === 'pedido' ? '006' : ['cliente','entrada'].includes(it.tipo) ? '007' : it.tipo === 'cliente_upd' ? '008' : '005') || friendly(r.error); continue; }
       if (it.tipo === 'cliente' && r.data && r.data[0] && r.data[0].cliente_id !== it.id) {
         // Ya existía con ese documento: lo pendiente queda a nombre del cliente existente
-        const real = r.data[0].cliente_id; c.forEach(x => { if (x.args && x.args.p_cliente === it.id) x.args.p_cliente = real; });
+        const real = r.data[0].cliente_id; c.forEach(x => { if (x.args && x.args.p_cliente === it.id) x.args.p_cliente = real; if (x.tipo === 'cliente_upd' && x.args.p_id === it.id) x.args.p_id = real; });
       }
       if (it.tipo === 'estado' && r.data && r.data.sin_existencias && r.data.sin_existencias.length) faltan.push(...r.data.sin_existencias.map(f => nice(f.producto)));
       ok++; c = c.filter(x => x !== it);
@@ -478,7 +479,7 @@ async function loadMe() {
   shell(); await go(TABS[ROLE][0][0]); pintarRed(); syncCola(); precargar();
 }
 function resumenPend(pend) {
-  const N = { venta: ['venta','ventas'], pedido: ['pedido','pedidos'], cliente: ['cliente nuevo','clientes nuevos'], estado: ['cambio de pedido','cambios de pedidos'], entrada: ['entrada de mercancía','entradas de mercancía'] };
+  const N = { venta: ['venta','ventas'], pedido: ['pedido','pedidos'], cliente: ['cliente nuevo','clientes nuevos'], cliente_upd: ['cambio de cliente','cambios de clientes'], estado: ['cambio de pedido','cambios de pedidos'], entrada: ['entrada de mercancía','entradas de mercancía'] };
   const k = {}; pend.forEach(x => { const t = x.tipo || 'venta'; k[t] = (k[t] || 0) + 1; });
   const l = Object.entries(k).map(([t, n]) => n + ' ' + N[t][n > 1 ? 1 : 0]);
   return l.length > 1 ? l.slice(0, -1).join(', ') + ' y ' + l.at(-1) : l[0];
@@ -508,6 +509,7 @@ async function precargar() {
     if (['administrador','gerencia'].includes(ROLE)) { await paso('dpd_rutas', LD.rutas); await paso('dpd_vends', LD.vends); await paso('dpd_peds_enviado', () => loadPedidos(['enviado'])); }
     if (['vendedor','cartera','conductor','cliente'].includes(ROLE)) await paso('dpd_peds_todos', () => loadPedidos());
     if (['administrador','gerencia','vendedor','cartera'].includes(ROLE)) await paso('dpd_cliview', LD.cliView);
+    if (ROLE === 'vendedor') await paso('dpd_mios', LD.mios);
     if (['administrador','bodega'].includes(ROLE)) { await paso('dpd_alistar', LD.alistar); await paso('dpd_stock', LD.stock); await paso('dpd_movs', LD.movs); }
     if (ROLE === 'cliente') await loadCatalog(null, true).catch(() => {});
   } finally { SILENCIO--; }
@@ -517,7 +519,8 @@ const LD = {
   listas: () => q(sb.from('listas_precio').select('id,nombre').order('nombre')),
   rutas: () => q(sb.from('rutas').select('id,nombre').order('nombre')),
   vends: () => q(sb.from('vendedores').select('perfil_id,perfiles(nombre)')),
-  cliView: () => q(sb.from('clientes').select('id,razon_social,numero_documento,tipo_documento,telefono,direccion,municipio,cupo,plazo_dias,activo,rutas(nombre),listas_precio(nombre)').order('razon_social')),
+  cliView: () => q(sb.from('clientes').select('id,razon_social,nombre_comercial,numero_documento,digito_verificacion,tipo_documento,telefono,email_facturacion,direccion,municipio,cupo,plazo_dias,forma_pago_habitual,activo,ruta_id,vendedor_id,lista_precio_id,rutas(nombre),listas_precio(nombre)').order('razon_social')),
+  mios: () => q(sb.rpc('clientes_creados_por_mi')),
   alistar: () => loadPedidos(['aprobado','en_alistamiento']),
   stock: () => q(sb.from('stock_actual').select('producto_id,cantidad')),
   movs: () => q(sb.from('movimientos_inventario').select('producto_id,cantidad,creado_en,nota').eq('tipo', 'entrada').order('creado_en', { ascending: false }).limit(10)),
@@ -950,35 +953,58 @@ async function doRecalc(pct) {
   await q(sb.from('precios_lista').upsert(rows)); closeSheet(); toast('Lista actualizada'); refresh();
 }
 V.clientes = async () => {
-  const clis = await cached('dpd_cliview', LD.cliView);
+  const base = await cached('dpd_cliview', LD.cliView);
+  if (ROLE === 'vendedor') C.mios = await cached('dpd_mios', LD.mios).catch(() => C.mios || []);
   const canEdit = ['administrador','gerencia','vendedor'].includes(ROLE);
   const pend = colaGet().filter(x => x.tipo === 'cliente');
+  // cambios hechos sin señal: se ven ya aplicados
+  const clis = base.map(c => { const u = colaGet().filter(x => x.tipo === 'cliente_upd' && x.args.p_id === c.id); return u.length ? { ...c, ...Object.assign({}, ...u.map(x => x.args.p_datos)), _upd: u } : c; });
+  C.cv = Object.fromEntries(clis.map(c => [c.id, c]));
   return `<div class="row"><h2>Clientes</h2>${canEdit ? '<button class="btn sm" onclick="nuevoCliente()">＋ Nuevo</button>' : ''}</div>
-  ${pend.map(x => `<div class="card" style="border:2px dashed #D9486A"><div class="row">${av(x.args.razon_social)}<div style="flex:1;min-width:0"><b>${esc(x.args.razon_social)}</b><div class="mut">${esc(x.args.tipo_documento)} ${esc(x.args.numero_documento)}</div></div><span class="badge b-pend">📵 Por enviar</span></div>
-   <div class="mut" style="margin-top:8px">${x.error ? '⚠️ ' + esc(x.error) : 'Ya le puedes vender. Se envía solo cuando haya señal' + (x.nit ? '.' : ' y, si el documento aparece en el registro, se completan los datos solos.')}</div>
-   ${x.error ? `<div class="acts"><button class="btn sm sec" onclick="quitarPend('${x.id}')">Quitar</button></div>` : ''}</div>`).join('')}
-  ${clis.map((c, i) => `<div class="card" ${dl(i)}><div class="row">${av(c.razon_social, i)}<div style="flex:1;min-width:0"><b>${esc(c.razon_social)}</b><div class="mut">${esc(c.tipo_documento)} ${esc(c.numero_documento)}${c.telefono ? ' · 📞 ' + esc(c.telefono) : ''}</div></div>${c.rutas ? `<span class="badge b-mut">${esc(c.rutas.nombre)}</span>` : ''}</div>
+  ${pend.map(x => `<div class="card" style="border:2px dashed #D9486A;cursor:pointer" onclick="editarPendiente('${x.id}')"><div class="row">${av(x.args.razon_social)}<div style="flex:1;min-width:0"><b>${esc(x.args.razon_social)}</b><div class="mut">${esc(x.args.tipo_documento)} ${esc(x.args.numero_documento)}</div></div><span class="badge b-pend">📵 Por enviar</span></div>
+   ${faltaHTML(x.args)}<div class="mut" style="margin-top:8px">${x.error ? '⚠️ ' + esc(x.error) : 'Ya le puedes vender. Se envía solo cuando haya señal' + (x.nit ? '.' : ' y, si el documento aparece en el registro, se pone solo la razón social oficial.')} Toca para modificarlo.</div>
+   ${x.error ? `<div class="acts"><button class="btn sm sec" onclick="event.stopPropagation();quitarPend('${x.id}')">Quitar</button></div>` : ''}</div>`).join('')}
+  ${clis.map((c, i) => `<div class="card" ${dl(i)} style="cursor:pointer" onclick="verCliente('${c.id}')"><div class="row">${av(c.razon_social, i)}<div style="flex:1;min-width:0"><b>${esc(c.razon_social)}</b><div class="mut">${esc(c.tipo_documento)} ${esc(c.numero_documento)}${c.telefono ? ' · 📞 ' + esc(c.telefono) : ''}</div></div>${c.rutas ? `<span class="badge b-mut">${esc(c.rutas.nombre)}</span>` : ''}</div>
    <div class="mut" style="margin-top:8px">📍 ${esc(c.direccion || 'Sin dirección')}, ${esc(c.municipio)}</div>
-   <div class="mut">Lista ${esc(c.listas_precio?.nombre || '')} · cupo ${fmt(c.cupo)} · ${c.plazo_dias ? c.plazo_dias + ' días' : 'contado'}${c.activo ? '' : ' · <b style="color:var(--bad)">inactivo</b>'}</div></div>`).join('') || `<div class="empty"><span class="e">👥</span>${canEdit ? 'Aún no hay clientes. Toca ＋ Nuevo para crear el primero.' : 'No tienes clientes asignados todavía.'}</div>`}`;
+   <div class="mut">Lista ${esc(c.listas_precio?.nombre || '')} · cupo ${fmt(c.cupo)} · ${c.plazo_dias ? c.plazo_dias + ' días' : 'contado'}${c.activo ? '' : ' · <b style="color:var(--bad)">inactivo</b>'}</div>
+   ${c._upd ? `<div class="note ${c._upd.some(x => x.error) ? 'warnnote' : ''}" style="margin-top:6px">${c._upd.some(x => x.error) ? '⚠️ ' + esc(c._upd.find(x => x.error).error) : '⏫ Cambios guardados sin señal: se envían solos'}</div>` : faltaHTML(c)}</div>`).join('') || (pend.length ? '' : `<div class="empty"><span class="e">👥</span>${canEdit ? 'Aún no hay clientes. Toca ＋ Nuevo para crear el primero.' : 'No tienes clientes asignados todavía.'}</div>`)}`;
 };
-async function nuevoCliente() {
-  const adm = ROLE !== 'vendedor';
+const FALTAN = [['direccion','dirección'],['telefono','teléfono'],['email_facturacion','correo de facturación']];
+function faltaHTML(c) { const f = FALTAN.filter(([k]) => !c[k]).map(x => x[1]); return f.length ? `<div class="mut" style="margin-top:6px;color:var(--terra2)">✏️ Le falta: ${f.join(', ')}</div>` : ''; }
+const puedeModificar = c => ['administrador','gerencia'].includes(ROLE) || (ROLE === 'vendedor' && (C.mios || []).includes(c.id));
+function verCliente(id) {
+  const c = C.cv[id]; if (!c) return;
+  const F = (l, v) => `<div class="li"><div class="pn"><span>${l}</span><b>${v ? esc(v) : '<span style="color:var(--terra2)">— falta —</span>'}</b></div></div>`;
+  sheet(`<h2>${esc(c.razon_social)}</h2>${c.nombre_comercial ? `<div class="mut">${esc(c.nombre_comercial)}</div>` : ''}
+  <div class="card" style="margin-top:10px">${F('Documento', `${c.tipo_documento} ${c.numero_documento}${c.digito_verificacion ? '-' + c.digito_verificacion : ''}`)}${F('Teléfono', c.telefono)}${F('Correo de facturación', c.email_facturacion)}${F('Dirección', c.direccion)}${F('Municipio', c.municipio)}
+  ${F('Ruta', c.rutas?.nombre || '')}${F('Lista de precios', c.listas_precio?.nombre || '')}${F('Cupo y plazo', fmt(c.cupo) + ' · ' + (c.plazo_dias ? c.plazo_dias + ' días' : 'contado'))}</div>
+  ${puedeModificar(c) ? `<div class="grid2"><button class="btn sec" onclick="closeSheet()">Cerrar</button><button class="btn" onclick="editarCliente('${id}')">✏️ Modificar</button></div>`
+    : `<div class="note">${ROLE === 'vendedor' ? 'Solo quien creó este cliente o la administración pueden modificarlo.' : ''}</div><button class="btn sec" onclick="closeSheet()">Cerrar</button>`}`);
+}
+function editarCliente(id) { abrirFormCliente(C.cv[id], 'editar'); }
+function editarPendiente(id) { const x = colaGet().find(y => y.id === id); if (x) abrirFormCliente({ ...x.args, id }, 'pendiente'); }
+function nuevoCliente() { return abrirFormCliente(null, 'nuevo'); }
+async function abrirFormCliente(c, modo) {
+  const adm = ROLE !== 'vendedor', v = k => esc(c && c[k] != null ? c[k] : '');
+  C.fmodo = modo; C.fcli = c;
   const [rutas, listas, vends] = adm ? await Promise.all([cached('dpd_rutas', LD.rutas), cached('dpd_listas', LD.listas), cached('dpd_vends', LD.vends)]).catch(e => { if (esRed(e)) toast('Sin señal: abre Clientes una vez con señal para poder crear clientes', true); throw e; }) : [[], [], []];
   C.nitOk = null;
-  sheet(`<h2>Nuevo cliente</h2><form onsubmit="event.preventDefault();guardarCliente()">
-  <div class="grid2"><div><label>Tipo</label><select id="c_td"><option>NIT</option><option>CC</option><option>CE</option></select></div><div><label>Número (sin dígito)</label><input id="c_nd" required inputmode="numeric" oninput="this.value=this.value.replace(/\D/g,'');calcDV()"></div></div>
-  <div class="row" style="gap:8px;margin-top:8px"><div style="width:90px"><label style="margin-top:0">DV</label><input id="c_dv" inputmode="numeric" maxlength="1"></div><button type="button" class="btn sm" style="flex:1;margin-top:22px" id="c_bus" onclick="buscarNIT()">🔎 Buscar en Cámara de Comercio</button></div>
+  const sel = (val, op) => op.map(([k, n]) => `<option value="${k}" ${String(val ?? '') === String(k) ? 'selected' : ''}>${esc(n)}</option>`).join('');
+  sheet(`<h2>${modo === 'nuevo' ? 'Nuevo cliente' : 'Modificar cliente'}</h2><form onsubmit="event.preventDefault();guardarCliente()">
+  <div class="grid2"><div><label>Tipo</label><select id="c_td">${sel(c ? c.tipo_documento : 'NIT', [['NIT','NIT'],['CC','CC'],['CE','CE']])}</select></div><div><label>Número (sin dígito)</label><input id="c_nd" required inputmode="numeric" value="${v('numero_documento')}" oninput="this.value=this.value.replace(/\D/g,'');calcDV()"></div></div>
+  <div class="row" style="gap:8px;margin-top:8px"><div style="width:90px"><label style="margin-top:0">DV</label><input id="c_dv" inputmode="numeric" maxlength="1" value="${v('digito_verificacion')}"></div><button type="button" class="btn sm" style="flex:1;margin-top:22px" id="c_bus" onclick="buscarNIT()">🔎 Buscar en Cámara de Comercio</button></div>
   <div id="c_info"></div>
-  <label>Razón social o nombre</label><input id="c_rs" required><label>Nombre del negocio</label><input id="c_nc">
-  <div class="grid2"><div><label>Teléfono</label><input id="c_tel" inputmode="tel"></div><div><label>Correo de facturación</label><input id="c_em" type="email"></div></div>
-  <label>Dirección</label><input id="c_dir"><label>Municipio</label><input id="c_mun" value="Yopal">
-  ${adm ? `<label>Ruta</label><div class="row" style="gap:8px"><select id="c_ruta"><option value="">Sin ruta</option>${rutas.map(r => `<option value="${r.id}">${esc(r.nombre)}</option>`).join('')}</select><input id="c_nr" placeholder="o crea una nueva" style="flex:1"></div>
-  <label>Vendedor</label><select id="c_ven"><option value="">Sin vendedor</option>${vends.map(v => `<option value="${v.perfil_id}">${esc(v.perfiles?.nombre || '')}</option>`).join('')}</select>
-  <label>Lista de precios</label><select id="c_lis">${listas.map(l => `<option value="${l.id}" ${l.nombre === 'Tiendas' ? 'selected' : ''}>${esc(l.nombre)}</option>`).join('')}</select>
-  <div class="grid2"><div><label>Cupo de crédito ($)</label><input id="c_cupo" type="number" value="0"></div><div><label>Plazo (días)</label><input id="c_pla" type="number" value="0"></div></div>
-  <label>Forma de pago habitual</label><select id="c_fp"><option value="contado">Contado</option><option value="credito">Crédito</option><option value="factura_contra_factura">Factura contra factura</option></select>
-  ` : `<div class="note" style="margin-top:12px">Queda en tu ruta, de contado y con la lista Tiendas. La administración puede darle cupo o cambiarle la lista.</div>`}
-  <div style="height:16px"></div><button class="btn" id="c_btn">Guardar cliente</button></form>`);
+  <label>Razón social o nombre</label><input id="c_rs" required value="${v('razon_social')}"><label>Nombre del negocio</label><input id="c_nc" value="${v('nombre_comercial')}">
+  <div class="note" style="margin-top:12px">📍 Dirección, teléfono y correo no vienen del registro público: escríbelos aquí.</div>
+  <div class="grid2"><div><label>Teléfono</label><input id="c_tel" inputmode="tel" value="${v('telefono')}"></div><div><label>Correo de facturación</label><input id="c_em" type="email" value="${v('email_facturacion')}"></div></div>
+  <label>Dirección</label><input id="c_dir" value="${v('direccion')}"><label>Municipio</label><input id="c_mun" value="${c ? v('municipio') : 'Yopal'}">
+  ${adm ? `<label>Ruta</label><div class="row" style="gap:8px"><select id="c_ruta"><option value="">Sin ruta</option>${sel(c && c.ruta_id, rutas.map(r => [r.id, r.nombre]))}</select><input id="c_nr" placeholder="o crea una nueva" style="flex:1"></div>
+  <label>Vendedor</label><select id="c_ven"><option value="">Sin vendedor</option>${sel(c && c.vendedor_id, vends.map(x => [x.perfil_id, x.perfiles?.nombre || '']))}</select>
+  <label>Lista de precios</label><select id="c_lis">${sel(c && c.lista_precio_id ? c.lista_precio_id : (listas.find(l => l.nombre === 'Tiendas') || {}).id, listas.map(l => [l.id, l.nombre]))}</select>
+  <div class="grid2"><div><label>Cupo de crédito ($)</label><input id="c_cupo" type="number" value="${c ? +c.cupo || 0 : 0}"></div><div><label>Plazo (días)</label><input id="c_pla" type="number" value="${c ? +c.plazo_dias || 0 : 0}"></div></div>
+  <label>Forma de pago habitual</label><select id="c_fp">${sel(c ? c.forma_pago_habitual : 'contado', [['contado','Contado'],['credito','Crédito'],['factura_contra_factura','Factura contra factura']])}</select>
+  ` : `<div class="note" style="margin-top:12px">${modo === 'editar' ? 'La lista de precios, el cupo y el plazo los cambia la administración.' : 'Queda en tu ruta, de contado y con la lista Tiendas. La administración puede darle cupo o cambiarle la lista.'}</div>`}
+  <div style="height:16px"></div><button class="btn" id="c_btn">${modo === 'nuevo' ? 'Guardar cliente' : 'Guardar cambios'}</button></form>`);
 }
 function dvNIT(n) {
   const w = [3, 7, 13, 17, 19, 23, 29, 37, 41, 43, 47, 53, 59, 67, 71], d = String(n).replace(/\D/g, '').split('').reverse();
@@ -991,7 +1017,9 @@ function calcDV() { if ($('#c_td').value === 'NIT') $('#c_dv').value = dvNIT($('
 async function registrosNIT(n) {
   const base = 'https://www.datos.gov.co/resource/c82u-588k.json?$limit=20&';
   let fallas = 0;
-  const res = await Promise.all(['nit', 'numero_identificacion'].map(k => fetch(base + k + '=' + n).then(r => r.ok ? r.json() : []).catch(() => { fallas++; return []; })));
+  const conTiempo = u => { const ctl = typeof AbortController !== 'undefined' ? new AbortController() : null; const t = ctl && setTimeout(() => ctl.abort(), 12000);
+    return fetch(u, ctl ? { signal: ctl.signal } : {}).finally(() => t && clearTimeout(t)); };
+  const res = await Promise.all(['nit', 'numero_identificacion'].map(k => conTiempo(base + k + '=' + n).then(r => r.ok ? r.json() : []).catch(() => { fallas++; return []; })));
   if (fallas === 2) throw new Error('Failed to fetch');
   const vistos = new Set(), regs = res.flat().filter(r => { const k = r.camara_comercio + r.matricula; if (vistos.has(k)) return false; vistos.add(k); return true; });
   regs.sort((x, y) => ((y.estado_matricula === 'ACTIVA') - (x.estado_matricula === 'ACTIVA')) || ((+y.ultimo_ano_renovado || 0) - (+x.ultimo_ano_renovado || 0)) || (/PRINCIPAL/.test(y.categoria_matricula || '') - /PRINCIPAL/.test(x.categoria_matricula || '')));
@@ -1029,10 +1057,16 @@ async function buscarNIT() {
 }
 async function guardarCliente() {
   const b = $('#c_btn'), adm = ROLE !== 'vendedor', v = k => ($('#' + k) ? $('#' + k).value : '').trim();
+  if (C.fmodo === 'editar') return guardarCambiosCliente();
   const datos = { tipo_documento: v('c_td'), numero_documento: v('c_nd'), digito_verificacion: v('c_dv') || null, razon_social: v('c_rs'),
     nombre_comercial: v('c_nc') || null, telefono: v('c_tel') || null, email_facturacion: v('c_em') || null, direccion: v('c_dir') || null, municipio: v('c_mun') || 'Yopal' };
   if (adm) Object.assign(datos, { ruta_id: v('c_ruta') || null, ruta_nueva: v('c_nr') || null, vendedor_id: v('c_ven') || null, lista_precio_id: v('c_lis'),
     cupo: +v('c_cupo') || 0, plazo_dias: +v('c_pla') || 0, forma_pago_habitual: v('c_fp') });
+  if (C.fmodo === 'pendiente') {
+    // Aún no se ha enviado: se corrige lo guardado en el celular
+    const c = colaGet().map(x => x.id === C.fcli.id ? { ...x, args: { ...x.args, ...datos }, error: null, nit: x.nit && x.args.numero_documento === datos.numero_documento } : x);
+    colaSet(c); closeSheet(); toast('Cliente corregido'); refresh(); syncCola(); return;
+  }
   if (colaGet().some(x => x.tipo === 'cliente' && x.args.numero_documento === datos.numero_documento)) return toast('Ese documento ya está guardado como cliente nuevo', true);
   b.disabled = true; b.textContent = 'Guardando…';
   const it = { id: nuevoId(), dueno: ME.id, tipo: 'cliente', args: datos, nit: C.nitOk === datos.numero_documento.replace(/\D/g, '') };
@@ -1042,6 +1076,24 @@ async function guardarCliente() {
   if (r.error) { colaSet([...colaGet(), it]); toast('📵 Sin señal: cliente guardado. Ya le puedes vender; se envía solo'); }
   else { toast(r.data[0].nuevo ? 'Cliente creado' : 'Ese cliente ya existía: quedó el que estaba registrado');
     lsDel(uk('dpd_clis')); lsDel(uk('dpd_cliview')); }
+  refresh();
+}
+async function guardarCambiosCliente() {
+  const b = $('#c_btn'), c = C.fcli, adm = ROLE !== 'vendedor', v = k => ($('#' + k) ? $('#' + k).value : '').trim();
+  const campos = [['c_td','tipo_documento'],['c_nd','numero_documento'],['c_dv','digito_verificacion'],['c_rs','razon_social'],['c_nc','nombre_comercial'],
+    ['c_tel','telefono'],['c_em','email_facturacion'],['c_dir','direccion'],['c_mun','municipio']];
+  if (adm) campos.push(['c_ruta','ruta_id'],['c_ven','vendedor_id'],['c_lis','lista_precio_id'],['c_cupo','cupo'],['c_pla','plazo_dias'],['c_fp','forma_pago_habitual']);
+  // solo se envía lo que cambió
+  const datos = {};
+  campos.forEach(([f, k]) => { const nuevo = v(f), viejo = c[k] == null ? '' : String(c[k]); if (['cupo','plazo_dias'].includes(k) ? +nuevo !== +viejo : nuevo !== viejo) datos[k] = ['cupo','plazo_dias'].includes(k) ? +nuevo || 0 : nuevo || null; });
+  if (adm && v('c_nr')) datos.ruta_nueva = v('c_nr');
+  if (!Object.keys(datos).length) { closeSheet(); return toast('No cambiaste nada'); }
+  b.disabled = true; b.textContent = 'Guardando…';
+  const r = await rpcX('actualizar_cliente', { p_id: c.id, p_datos: datos, p_autor: ME.id });
+  if (r.error && !esRed(r.error)) { toast(faltaScript(r.error, '008') || friendly(r.error), true); b.disabled = false; b.textContent = 'Guardar cambios'; return; }
+  closeSheet();
+  if (r.error) { colaSet([...colaGet(), { id: nuevoId(), dueno: ME.id, tipo: 'cliente_upd', args: { p_id: c.id, p_datos: datos } }]); toast('📵 Sin señal: los cambios quedaron guardados y se envían solos'); }
+  else { toast('Cliente actualizado'); lsDel(uk('dpd_clis')); }
   refresh();
 }
 async function fn(body) {
