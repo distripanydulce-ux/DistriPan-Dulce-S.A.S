@@ -365,6 +365,7 @@ function enviarPend(it) {
   if (it.tipo === 'entrada') return rpcX('registrar_entrada', { ...it.args, p_autor: it.dueno });
   if (it.tipo === 'cliente_upd') return rpcX('actualizar_cliente', { ...it.args, p_autor: it.dueno });
   if (it.tipo === 'compra') return rpcX('guardar_compra', { ...it.args, p_autor: it.dueno });
+  if (it.tipo === 'cargue') return rpcX('cargar_carro', { ...it.args, p_autor: it.dueno });
   if (it.tipo === 'recepcion') return rpcX('registrar_recepcion', { ...it.args, p_autor: it.dueno });
   return rpcVenta({ ...it.args, p_vendedor: it.dueno });
 }
@@ -391,7 +392,7 @@ async function syncCola(manual) {
       const base = c.find(x => x.tipo === 'cliente' && x.error && it.args && it.args.p_cliente === x.id);
       if (base && base !== it) { it.error = 'El cliente nuevo no se pudo crear: ' + base.error; continue; }
       const r = await enviarPend(it);
-      if (r.error) { if (esRed(r.error)) break; it.error = faltaScript(r.error, it.tipo === 'pedido' ? '006' : ['cliente','entrada'].includes(it.tipo) ? '007' : it.tipo === 'cliente_upd' ? '008' : ['compra','recepcion'].includes(it.tipo) ? '010' : '005') || friendly(r.error); continue; }
+      if (r.error) { if (esRed(r.error)) break; it.error = faltaScript(r.error, it.tipo === 'pedido' ? '006' : ['cliente','entrada'].includes(it.tipo) ? '007' : it.tipo === 'cliente_upd' ? '008' : ['compra','recepcion'].includes(it.tipo) ? '010' : it.tipo === 'cargue' ? '011' : '005') || friendly(r.error); continue; }
       if (it.tipo === 'cliente' && r.data && r.data[0] && r.data[0].cliente_id !== it.id) {
         // Ya existía con ese documento: lo pendiente queda a nombre del cliente existente
         const real = r.data[0].cliente_id; c.forEach(x => { if (x.args && x.args.p_cliente === it.id) x.args.p_cliente = real; if (x.tipo === 'cliente_upd' && x.args.p_id === it.id) x.args.p_id = real; });
@@ -415,9 +416,9 @@ const TABS = {
   gerencia:      [['resumen','✨','Resumen'],['pedidos','✅','Pedidos'],['precios','🏷️','Productos'],['clientes','👥','Clientes']],
   vendedor:      [['inicio','🏠','Inicio'],['contado','💵','Contado'],['vender','🛒','Pedido'],['pedidos','📋','Pedidos'],['clientes','👥','Clientes']],
   cliente:       [['vitrina','🥐','Vitrina'],['pedidos','🚚','Mis pedidos']],
-  bodega:        [['alistar','📦','Alistar'],['compras','🧾','Compras'],['recibir','🚛','Recibir'],['inventario','📊','Inventario']],
-  cartera:       [['pedidos','📋','Pedidos'],['clientes','👥','Clientes'],['proximo','💰','Cartera']],
-  conductor:     [['pedidos','🚚','Entregas'],['proximo','🗺️','Rutas']]
+  bodega:        [['alistar','📦','Alistar'],['cargue','🚚','Cargue'],['compras','🧾','Compras'],['recibir','🚛','Recibir'],['inventario','📊','Inventario']],
+  cartera:       [['pedidos','📋','Pedidos'],['clientes','👥','Clientes'],['cargue','💵','Liquidar'],['proximo','💰','Cartera']],
+  conductor:     [['pedidos','🚚','Entregas'],['micarga','📦','Mi carga'],['proximo','🗺️','Rutas']]
 };
 
 // ---------- sesión ----------
@@ -487,7 +488,7 @@ async function loadMe() {
   shell(); await go(TABS[ROLE][0][0]); pintarRed(); syncCola(); precargar();
 }
 function resumenPend(pend) {
-  const N = { venta: ['venta','ventas'], pedido: ['pedido','pedidos'], cliente: ['cliente nuevo','clientes nuevos'], cliente_upd: ['cambio de cliente','cambios de clientes'], compra: ['pedido de compra','pedidos de compra'], recepcion: ['recepción de mercancía','recepciones de mercancía'], estado: ['cambio de pedido','cambios de pedidos'], entrada: ['entrada de mercancía','entradas de mercancía'] };
+  const N = { venta: ['venta','ventas'], pedido: ['pedido','pedidos'], cliente: ['cliente nuevo','clientes nuevos'], cliente_upd: ['cambio de cliente','cambios de clientes'], compra: ['pedido de compra','pedidos de compra'], recepcion: ['recepción de mercancía','recepciones de mercancía'], cargue: ['cargue de carro','cargues de carros'], estado: ['cambio de pedido','cambios de pedidos'], entrada: ['entrada de mercancía','entradas de mercancía'] };
   const k = {}; pend.forEach(x => { const t = x.tipo || 'venta'; k[t] = (k[t] || 0) + 1; });
   const l = Object.entries(k).map(([t, n]) => n + ' ' + N[t][n > 1 ? 1 : 0]);
   return l.length > 1 ? l.slice(0, -1).join(', ') + ' y ' + l.at(-1) : l[0];
@@ -519,6 +520,9 @@ async function precargar() {
     if (['vendedor','cartera','conductor','cliente'].includes(ROLE)) await paso('dpd_peds_todos', () => loadPedidos());
     if (['administrador','gerencia','vendedor','cartera'].includes(ROLE)) await paso('dpd_cliview', LD.cliView);
     if (ROLE === 'vendedor') await paso('dpd_mios', LD.mios);
+    if (['administrador','bodega','gerencia'].includes(ROLE)) await paso('dpd_bodegas', LD.bodegas);
+    if (['administrador','bodega','cartera','gerencia'].includes(ROLE)) { await paso('dpd_cargues', LD.cargues); if (ROLE !== 'gerencia') await paso('dpd_personal', LD.personal); }
+    if (['vendedor','conductor'].includes(ROLE)) await paso('dpd_micarga', LD.micarga);
     if (['administrador','bodega'].includes(ROLE)) { await paso('dpd_alistar', LD.alistar); await paso('dpd_stock', LD.stock); await paso('dpd_movs', LD.movs);
       await paso('dpd_provs', LD.provs); await paso('dpd_compras', LD.compras); await paso('dpd_recs', LD.recs); await paso('dpd_venc', LD.venc); }
     if (ROLE === 'gerencia') { await paso('dpd_compras', LD.compras); await paso('dpd_stock', LD.stock); await paso('dpd_venc', LD.venc); }
@@ -539,7 +543,11 @@ const LD = {
   recs: () => q(sb.from('recepciones').select('id,fecha,documento_origen,compra_id,proveedores(nombre),recepcion_items(producto_id,cantidad_recibida,cantidad_averiada)').order('fecha', { ascending: false }).limit(15)),
   venc: () => q(sb.rpc('por_vencer', { p_dias: 7 })),
   alistar: () => loadPedidos(['aprobado','en_alistamiento']),
-  stock: () => q(sb.from('stock_actual').select('producto_id,cantidad')),
+  stock: () => q(sb.from('stock_actual').select('bodega_id,producto_id,cantidad')),
+  bodegas: () => q(sb.from('bodegas').select('id,nombre,tipo,responsable_id').order('nombre')),
+  cargues: () => q(sb.rpc('cargues_recientes', { p_dias: 3 })),
+  personal: () => q(sb.rpc('personal_de_ruta')),
+  micarga: () => q(sb.rpc('carga_actual')),
   movs: () => q(sb.from('movimientos_inventario').select('producto_id,cantidad,creado_en,nota').eq('tipo', 'entrada').order('creado_en', { ascending: false }).limit(10)),
 };
 // Clientes guardados + los creados sin señal que aún no se han enviado
@@ -743,6 +751,7 @@ V.inicio = async () => {
   <div style="font-size:12px;opacity:.85;font-weight:700">Pedidos ${fmt(a.pedidos)} · Contado ${fmt(a.contado)}</div>
   <div style="font-size:13px;opacity:.8;font-weight:700">${meta ? 'Meta ' + fmt(meta) : 'Sin meta asignada'} · descuento máx. ${+a.descuento_max || 0}%</div></div>${ring(pct)}</div>
   ${av ? '' : '<div class="note warnnote">No se pudo calcular el avance de la meta en este momento.</div>'}
+  ${await tarjetaCarga()}
   <div class="tiles"><button class="tile t1" onclick="go('vender')"><span class="em">🛒</span><b>Nuevo pedido</b><span>Escoge el cliente</span></button>
   <button class="tile t4" onclick="go('pedidos')"><span class="em">📋</span><b>Mis pedidos</b><span>${mios.filter(p => p.estado === 'enviado').length} por aprobar</span></button>
   <button class="tile t3" onclick="go('contado')"><span class="em">💵</span><b>Venta de contado</b><span>Tirilla o factura</span></button>
@@ -848,7 +857,7 @@ async function guardarRecepcion() {
   if (r.error && !esRed(r.error)) { toast(faltaScript(r.error, '010') || friendly(r.error), true); b.disabled = false; b.textContent = '✓ Confirmar recepción'; return; }
   if (r.error) { colaSet([...colaGet(), { id: args.p_id, dueno: ME.id, tipo: 'recepcion', args }]); toast('📵 Sin señal: la recepción quedó guardada y se suma sola'); syncCola(); }
   else toast('Recepción guardada: ' + items.reduce((a, l) => a + +l.bien, 0) + ' unidades al inventario');
-  ['dpd_compras','dpd_recs','dpd_stock','dpd_venc'].forEach(k => lsDel(uk(k)));
+  if (!r.error) ['dpd_compras','dpd_recs','dpd_stock','dpd_venc'].forEach(k => lsDel(uk(k)));
   C.rlin = null; C.rc = null; go('recibir');
 }
 // ---------- Compras ----------
@@ -941,12 +950,167 @@ async function guardarCompra() {
   const prov = sel.options[sel.selectedIndex].text;
   if (r.error) { colaSet([...colaGet().filter(x => x.id !== args.p_id), { id: args.p_id, dueno: ME.id, tipo: 'compra', args, prov, fecha: new Date().toISOString() }]); toast('📵 Sin señal: el pedido de compra quedó guardado'); }
   const c = { numero: r.data && r.data[0] ? r.data[0].numero : null, prov, fecha: new Date().toISOString(), compra_items: items, observaciones: args.p_obs };
-  lsDel(uk('dpd_compras')); C.ncant = null; C.nc = null;
+  if (!r.error) lsDel(uk('dpd_compras')); C.ncant = null; C.nc = null;
   await go('compras');
   sheet(`<h2>✓ Pedido de compra ${c.numero ? 'C-' + c.numero : 'guardado'}</h2><div class="mut">${items.length} productos · ${items.reduce((a, i) => a + i.cantidad, 0)} unidades para ${esc(prov)}</div>
   <a class="btn" style="text-decoration:none;margin-top:14px" href="https://wa.me/?text=${encodeURIComponent(textoCompra(c))}" target="_blank" rel="noopener">📲 Enviar por WhatsApp</a>
   <div style="height:10px"></div><button class="btn sec" onclick="closeSheet()">Listo</button>`);
 }
+// ---------- Cargue del carro y liquidación (Etapa 3B) ----------
+const EST_CG = { en_ruta: ['En ruta', 'b-info'], contado: ['Contado · falta la plata', 'b-pend'], liquidado: ['Liquidado', 'b-ok'] };
+V.cargue = async () => {
+  const puedeCargar = ['administrador','bodega'].includes(ROLE), puedePlata = ['administrador','cartera'].includes(ROLE);
+  const cgs = await cached('dpd_cargues', LD.cargues);
+  C.cg = Object.fromEntries(cgs.map(c => [c.id, c]));
+  const pend = colaGet().filter(x => x.tipo === 'cargue');
+  const medios = o => Object.entries(o || {}).map(([k, v]) => (MEDIO_N[k] || k) + ' ' + fmt(v)).join(' · ');
+  return `<div class="row"><h2>${ROLE === 'cartera' ? 'Liquidación de ruta' : 'Cargue y liquidación'}</h2>${puedeCargar ? '<button class="btn sm" onclick="C.cgf=null;go(\'cargar\')">＋ Cargar carro</button>' : '<button class="btn sm sec" onclick="refresh()">↻</button>'}</div>
+  <div class="note">${puedeCargar ? 'En la mañana se carga el carro de cada vendedor o conductor con sus pedidos y un surtido. Lo que venda o entregue sale del carro. En la tarde bodega cuenta lo que volvió' + (puedePlata ? ' y se recibe la plata.' : ' y la administración recibe la plata.') : 'Cuando bodega termina de contar, aquí recibes la plata de cada vendedor.'}</div>
+  ${pend.map(x => `<div class="card" style="border:2px dashed #D9486A"><div class="row"><b>Cargue sin enviar</b><span class="badge b-pend">📵 Por enviar</span></div><div class="mut">${esc(x.nombre || '')} · ${x.args.p_pedidos.length} pedidos · ${x.args.p_surtido.length} productos de surtido</div>
+    ${x.error ? `<div class="note warnnote">⚠️ ${esc(x.error)}</div><button class="btn sm sec" onclick="quitarPend('${x.id}')">Quitar</button>` : ''}</div>`).join('')}
+  ${cgs.map((c, i) => `<div class="card" ${dl(i)}><div class="row"><b class="serif" style="font-size:17px">Cargue #${c.numero} · ${esc(c.responsable)}</b><span class="badge ${EST_CG[c.estado][1]}">${EST_CG[c.estado][0]}</span></div>
+    <div class="mut">${fdate(c.fecha + 'T12:00')} · ${c.rol === 'conductor' ? 'Conductor' : 'Vendedor'} · ${+c.unidades} unidades · ${c.pedidos} pedidos${c.pedidos_pendientes ? ` (${c.pedidos_pendientes} sin entregar)` : ''}</div>
+    ${c.estado !== 'en_ruta' ? `<div class="mut" style="margin-top:6px">💵 Efectivo esperado <b>${fmt(c.efectivo_esperado)}</b>${medios(c.otros_medios) ? ' · ' + medios(c.otros_medios) : ''}${c.estado === 'liquidado' ? ` · entregó <b>${fmt(c.efectivo_entregado)}</b>${+c.efectivo_entregado !== +c.efectivo_esperado ? ` <b style="color:var(--bad)">(${+c.efectivo_entregado > +c.efectivo_esperado ? 'sobran ' : 'faltan '}${fmt(Math.abs(c.efectivo_entregado - c.efectivo_esperado))})</b>` : ' ✓'}` : ''}</div>` : ''}
+    ${c.notas ? `<div class="mut">📝 ${esc(c.notas)}</div>` : ''}
+    <div class="acts"><button class="btn sm sec" onclick="verCarga('${c.responsable_id}','${esc(c.responsable)}')">📦 Ver carga</button>
+    ${c.estado === 'en_ruta' && puedeCargar ? `<button class="btn sm sec" onclick="C.cgf='${c.responsable_id}';go('cargar')">＋ Recargar</button><button class="btn sm okb" onclick="C.cgc='${c.id}';go('contar')">🧮 Contar lo que volvió</button>` : ''}
+    ${c.estado === 'contado' && puedePlata ? `<button class="btn sm okb" onclick="recibirPlata('${c.id}')">💵 Recibir la plata</button>` : ''}</div></div>`).join('') || (pend.length ? '' : '<div class="empty"><span class="e">🚚</span>No hay cargues en los últimos días</div>')}`;
+};
+async function verCarga(id, nombre) {
+  sheet(`<h2>📦 Carga de ${esc(nombre)}</h2><div class="mut">Lo que lleva ahora en el carro</div><div id="vc"><div class="empty"><span class="e spin">🥖</span>Cargando…</div></div>`);
+  let d; try { d = await q(sb.rpc('carga_actual', { p_responsable: id })); } catch (e) { $('#vc').innerHTML = `<div class="note warnnote">${esRed(e) ? '📵 Sin señal: esto se consulta con internet.' : esc(friendly(e))}</div>`; return; }
+  $('#vc').innerHTML = `<div class="card">${d.map(x => `<div class="li">${pArtP(P(x.producto_id))}<div class="pn"><b>${nm(P(x.producto_id))}</b></div><span class="badge b-ok">${+x.cantidad}</span></div>`).join('') || '<div class="mut">El carro está vacío.</div>'}</div><button class="btn sec" onclick="closeSheet()">Cerrar</button>`;
+}
+// Cargar el carro: escoger persona, pedidos y surtido
+V.cargar = async () => {
+  if (!['administrador','bodega'].includes(ROLE)) return '<div class="empty"><span class="e">🔒</span>Solo bodega y administración cargan carros.</div>';
+  const [gente, peds] = await Promise.all([cached('dpd_personal', LD.personal), cached('dpd_alistar', LD.alistar)]);
+  C.gente = Object.fromEntries(gente.map(g => [g.id, g]));
+  C.cgPeds = Object.fromEntries(peds.map(p => [p.id, p]));
+  if (!C.cgSel || C.cgSelDe !== (C.cgf || '')) {
+    C.cgSelDe = C.cgf || ''; C.cgSur = {};
+    C.cgSel = new Set(C.cgf ? peds.filter(p => p.vendedor_id === C.cgf).map(p => p.id) : []);
+  }
+  sub.cgq = sub.cgq || '';
+  return `<div class="row"><h2>${C.cgf ? 'Recargar carro' : 'Cargar carro'}</h2><button class="btn sm sec" onclick="C.cgSel=null;go('cargue')">← Volver</button></div>
+  <div class="card"><label style="margin-top:0">¿A quién?</label><select id="cg_p" onchange="C.cgf=this.value;C.cgSel=null;refresh()"><option value="">— Escoge vendedor o conductor —</option>${gente.map(g => `<option value="${g.id}" ${C.cgf === g.id ? 'selected' : ''}>${esc(g.nombre)} · ${g.rol === 'conductor' ? 'conductor' : 'vendedor'}</option>`).join('')}</select></div>
+  ${C.cgf ? `<h3>1. Pedidos que lleva para entregar</h3>
+  ${peds.length ? `<div class="card">${peds.map(p => `<label class="li" style="cursor:pointer;margin:0"><input type="checkbox" style="width:22px;height:22px" ${C.cgSel.has(p.id) ? 'checked' : ''} onchange="this.checked?C.cgSel.add('${p.id}'):C.cgSel.delete('${p.id}');$('#cg_tot').innerHTML=totCargueHTML()">
+    <div class="pn"><b>Pedido #${p.numero} · ${esc(p.clientes?.razon_social || '')}</b><span>${p.vendedor_id === C.cgf ? '⭐ de este vendedor · ' : ''}${p.pedido_items.reduce((a, i) => a + +i.cantidad, 0)} unidades · ${fmt(pedTotal(p))}</span></div></label>`).join('')}</div>` : '<div class="mut">No hay pedidos aprobados por despachar.</div>'}
+  <h3>2. Surtido para vender de contado</h3>
+  <div class="search fijo"><span class="si">🔎</span><input placeholder="Buscar producto…" value="${esc(sub.cgq)}" oninput="sub.cgq=this.value;$('#cg_sur').innerHTML=surtidoHTML()"></div>
+  <div id="cg_sur">${surtidoHTML()}</div>
+  <h3>3. Total que sube al carro</h3><div id="cg_tot">${totCargueHTML()}</div>
+  <div style="height:14px"></div><button class="btn" id="cg_btn" onclick="guardarCargue()">🚚 Cargar el carro</button>` : ''}`;
+};
+function surtidoHTML() {
+  const qq = (sub.cgq || '').toLowerCase();
+  return `<div class="card">${CAT.filter(p => !qq || p.nombre.toLowerCase().includes(qq) || (p.codigo || '').toLowerCase().includes(qq)).map(p => `<div class="li"><div class="pn"><b>${nm(p)}</b><span>${p.codigo || ''}</span></div>
+    <input type="number" inputmode="numeric" min="0" style="width:84px;text-align:center" value="${C.cgSur[p.id] || ''}" placeholder="0" onchange="C.cgSur['${p.id}']=+this.value||0;$('#cg_tot').innerHTML=totCargueHTML()"></div>`).join('')}</div>`;
+}
+function totalesCargue() {
+  const t = {};
+  C.cgSel.forEach(id => (C.cgPeds[id]?.pedido_items || []).forEach(i => { t[i.producto_id] = (t[i.producto_id] || 0) + +i.cantidad; }));
+  Object.entries(C.cgSur).forEach(([id, n]) => { if (n > 0) t[id] = (t[id] || 0) + n; });
+  return t;
+}
+function totCargueHTML() {
+  const t = totalesCargue(), l = Object.entries(t);
+  return l.length ? `<div class="card">${l.map(([id, n]) => `<div class="li"><div class="pn"><b>${nm(P(id))}</b></div><span class="badge b-info">${n}</span></div>`).join('')}<div class="row" style="margin-top:8px"><b>Total</b><b>${l.reduce((a, x) => a + x[1], 0)} unidades</b></div></div>` : '<div class="mut">Escoge pedidos o surtido.</div>';
+}
+async function guardarCargue() {
+  const pedidos = [...C.cgSel], surtido = Object.entries(C.cgSur).filter(([, n]) => n > 0).map(([producto_id, cantidad]) => ({ producto_id, cantidad }));
+  if (!pedidos.length && !surtido.length) return toast('Escoge pedidos o surtido para cargar', true);
+  const b = $('#cg_btn'), nombre = (C.gente[C.cgf] || {}).nombre || '', args = { p_op: nuevoId(), p_responsable: C.cgf, p_pedidos: pedidos, p_surtido: surtido };
+  b.disabled = true; b.textContent = 'Cargando…';
+  const r = await rpcX('cargar_carro', { ...args, p_autor: ME.id });
+  if (r.error && !esRed(r.error)) { toast(faltaScript(r.error, '011') || friendly(r.error), true); b.disabled = false; b.textContent = '🚚 Cargar el carro'; return; }
+  if (r.error) { colaSet([...colaGet(), { id: args.p_op, dueno: ME.id, tipo: 'cargue', args, nombre }]); toast('📵 Sin señal: el cargue quedó guardado y se envía solo'); }
+  if (!r.error) ['dpd_cargues','dpd_alistar','dpd_stock'].forEach(k => lsDel(uk(k)));
+  C.cgSel = null; C.cgf = null; await go('cargue');
+  const falt = (r.data && r.data[0] && r.data[0].sin_existencias) || [];
+  if (!r.error) sheet(`<h2>🚚 Cargue #${r.data[0].numero} · ${esc(nombre)}</h2><div class="mut">${pedidos.length} pedidos quedaron <b>en camino</b> y ${surtido.reduce((a, x) => a + x.cantidad, 0)} unidades de surtido van en el carro.</div>
+    ${falt.length ? `<div class="note warnnote">Ojo: en bodega no alcanzaba para ${falt.map(f => esc(nice(f.producto))).join(', ')}. Revisa el inventario.</div>` : ''}<button class="btn" onclick="closeSheet()">Listo</button>`);
+}
+// Contar lo que volvió (bodega)
+V.contar = async () => {
+  if (!['administrador','bodega'].includes(ROLE)) return '<div class="empty"><span class="e">🔒</span>Solo bodega y administración cuentan.</div>';
+  const c = (C.cg || {})[C.cgc]; if (!c) return '<div class="empty"><span class="e">🚚</span>Escoge el cargue desde la pantalla de Cargue.<br><br><button class="btn sm sec" onclick="go(\'cargue\')">Ir a Cargue</button></div>';
+  // necesita señal: lo esperado depende de lo que el vendedor ya envió
+  const [carga, peds] = await Promise.all([q(sb.rpc('carga_actual', { p_responsable: c.responsable_id })), q(sb.rpc('pedidos_del_cargue', { p_cargue: c.id }))]);
+  C.ctEsp = Object.fromEntries(carga.map(x => [x.producto_id, +x.cantidad]));
+  C.ctPeds = peds.filter(p => p.estado === 'despachado');
+  if (!C.ct || C.ctDe !== c.id) { C.ctDe = c.id; C.ct = { ...C.ctEsp }; C.ctVuelven = new Set(); }
+  return `<div class="row"><h2>Contar · cargue #${c.numero}</h2><button class="btn sm sec" onclick="C.ct=null;go('cargue')">← Volver</button></div>
+  <div class="note warnnote">Antes de contar, pide a <b>${esc(c.responsable)}</b> que abra la app con señal para que se envíen sus ventas y entregas pendientes.</div>
+  ${C.ctPeds.length ? `<h3>Pedidos sin marcar como entregados</h3><div class="mut">Marca los que <b>no</b> se entregaron y volvieron. Quedan aprobados para despacharlos otro día.</div>
+  <div class="card">${C.ctPeds.map(p => `<label class="li" style="cursor:pointer;margin:0"><input type="checkbox" style="width:22px;height:22px" ${C.ctVuelven.has(p.pedido_id) ? 'checked' : ''} onchange="marcarVuelve('${p.pedido_id}',this.checked)"><div class="pn"><b>Pedido #${p.numero}</b><span>${esc(p.cliente)} · volvió sin entregar</span></div></label>`).join('')}</div>` : ''}
+  <h3>Lo que volvió en el carro</h3><div class="mut">Ya viene lleno con lo que debería traer. Corrige lo que no cuadre.</div>
+  <div id="ct_l">${conteoHTML()}</div>
+  <label>Notas</label><input id="ct_n" placeholder="Opcional">
+  <div style="height:14px"></div><button class="btn" id="ct_b" onclick="guardarConteo()">✓ Terminar conteo</button>`;
+};
+function esperadoConteo() {
+  const e = { ...C.ctEsp };
+  C.ctVuelven.forEach(id => (C.ped && C.ped[id] ? C.ped[id].pedido_items : (C.cgPeds && C.cgPeds[id] ? C.cgPeds[id].pedido_items : [])).forEach(i => { e[i.producto_id] = (e[i.producto_id] || 0) + +i.cantidad; }));
+  return e;
+}
+async function marcarVuelve(id, si) {
+  if (si) { C.ctVuelven.add(id); if (!(C.ped && C.ped[id])) { try { const p = await q(sb.from('pedidos').select('id,pedido_items(producto_id,cantidad)').eq('id', id).maybeSingle()); C.ped = { ...(C.ped || {}), [id]: p }; } catch (e) {} } }
+  else C.ctVuelven.delete(id);
+  const e = esperadoConteo(); Object.keys(e).forEach(k => { if (C.ct[k] == null || !si) C.ct[k] = e[k]; else C.ct[k] = Math.max(C.ct[k], e[k]); });
+  $('#ct_l').innerHTML = conteoHTML();
+}
+function conteoHTML() {
+  const e = esperadoConteo(), ids = [...new Set([...Object.keys(e), ...Object.keys(C.ct)])].filter(id => (e[id] || 0) !== 0 || (C.ct[id] || 0) !== 0);
+  return `<div class="card">${ids.map(id => { const d = (+C.ct[id] || 0) - (e[id] || 0);
+    return `<div class="li"><div class="pn"><b>${nm(P(id))}</b><span>Debía volver ${e[id] || 0}${d ? ` · <b style="color:var(--bad)">${d < 0 ? 'faltan ' + -d : 'sobran ' + d}</b>` : ' ✓'}</span></div>
+    <input type="number" inputmode="numeric" min="0" style="width:84px;text-align:center" value="${C.ct[id] ?? 0}" onchange="C.ct['${id}']=+this.value||0;$('#ct_l').innerHTML=conteoHTML()"></div>`; }).join('') || '<div class="mut">El carro volvió vacío.</div>'}</div>`;
+}
+async function guardarConteo() {
+  const c = C.cg[C.cgc], b = $('#ct_b');
+  b.disabled = true; b.textContent = 'Guardando…';
+  const conteo = Object.entries(C.ct).map(([producto_id, contado]) => ({ producto_id, contado: +contado || 0 }));
+  const r = await rpcX('contar_cargue', { p_cargue: c.id, p_conteo: conteo, p_no_entregados: [...C.ctVuelven], p_notas: $('#ct_n').value.trim() || null });
+  if (r.error) { toast(esRed(r.error) ? 'Sin señal: el conteo se guarda con internet' : faltaScript(r.error, '011') || friendly(r.error), true); b.disabled = false; b.textContent = '✓ Terminar conteo'; return; }
+  const x = r.data || {}; C.ct = null; ['dpd_cargues','dpd_stock','dpd_alistar'].forEach(k => lsDel(uk(k)));
+  await go('cargue');
+  const L = (t, l) => l.length ? `<div class="note ${t === 'Faltan' ? 'warnnote' : ''}"><b>${t}:</b><br>${l.map(f => esc(nice(f.producto)) + ': debía volver ' + +f.esperado + ', volvió ' + +f.contado).join('<br>')}</div>` : '';
+  sheet(`<h2>✓ Cargue #${c.numero} contado</h2>${L('Faltan', x.faltantes || [])}${L('Sobran', x.sobrantes || [])}${!(x.faltantes || []).length && !(x.sobrantes || []).length ? '<div class="note">La mercancía cuadró completa ✓</div>' : ''}
+  <div class="card"><div class="row"><b>Efectivo que debe entregar</b><span class="big">${fmt(x.efectivo_esperado)}</span></div>${Object.entries(x.otros_medios || {}).map(([k, v]) => `<div class="row"><span>${esc(MEDIO_N[k] || k)}</span><b>${fmt(v)}</b></div>`).join('')}</div>
+  <div class="mut">${['administrador','cartera'].includes(ROLE) ? 'Ahora recibe la plata desde la tarjeta del cargue.' : 'La administración recibe la plata.'}</div><button class="btn" onclick="closeSheet()">Listo</button>`);
+}
+// Recibir la plata (administración o cartera)
+function recibirPlata(id) {
+  const c = C.cg[id];
+  sheet(`<h2>💵 Plata · cargue #${c.numero}</h2><div class="mut">${esc(c.responsable)}</div>
+  <div class="card"><div class="row"><b>Efectivo esperado</b><span class="big">${fmt(c.efectivo_esperado)}</span></div>${Object.entries(c.otros_medios || {}).map(([k, v]) => `<div class="row"><span>${esc(MEDIO_N[k] || k)} (no se recibe en efectivo)</span><b>${fmt(v)}</b></div>`).join('')}</div>
+  <label>Efectivo que entregó</label><input id="pl_e" type="number" inputmode="numeric" value="${+c.efectivo_esperado || 0}" style="font-size:22px;font-weight:900" oninput="const d=(+this.value||0)-${+c.efectivo_esperado || 0};$('#pl_d').innerHTML=d?'<b style=&quot;color:var(--bad)&quot;>'+(d<0?'Faltan ':'Sobran ')+fmt(Math.abs(d))+'</b>':'Cuadra ✓'">
+  <div class="mut" id="pl_d" style="margin-top:6px">Cuadra ✓</div>
+  <label>Notas</label><input id="pl_n" placeholder="Opcional">
+  <div style="height:14px"></div><button class="btn" id="pl_b" onclick="guardarPlata('${id}')">✓ Recibí la plata</button>`);
+}
+async function guardarPlata(id) {
+  const b = $('#pl_b'); b.disabled = true;
+  const r = await rpcX('recibir_dinero_cargue', { p_cargue: id, p_efectivo: +$('#pl_e').value || 0, p_notas: $('#pl_n').value.trim() || null });
+  if (r.error) { b.disabled = false; return toast(esRed(r.error) ? 'Sin señal: esto se guarda con internet' : faltaScript(r.error, '011') || friendly(r.error), true); }
+  closeSheet(); lsDel(uk('dpd_cargues')); toast('Liquidación cerrada'); refresh();
+}
+// Vendedor y conductor: lo que llevan en el carro
+async function tarjetaCarga() {
+  const d = await cached('dpd_micarga', LD.micarga).catch(() => null);
+  if (!d || !d.length) return '';
+  const n = d.reduce((a, x) => a + +x.cantidad, 0);
+  return `<button class="card" style="width:100%;border:0;text-align:left;cursor:pointer;font:inherit" onclick="go('micarga')"><div class="row"><div><b>🚚 Hoy llevas ${n} unidades en el carro</b><div class="mut">${d.length} productos · toca para ver</div></div><span style="font-size:22px">›</span></div></button>`;
+}
+V.micarga = async () => {
+  const d = await cached('dpd_micarga', LD.micarga).catch(e => { if (!esRed(e)) throw e; return []; });
+  const vend = colaGet().filter(x => !x.tipo || x.tipo === 'venta');
+  const restar = {}; vend.forEach(x => (x.args.p_items || []).forEach(i => { restar[i.producto_id] = (restar[i.producto_id] || 0) + +i.cantidad; }));
+  return `<div class="row"><h2>📦 Mi carga</h2>${ROLE === 'vendedor' ? `<button class="btn sm sec" onclick="go('inicio')">← Inicio</button>` : `<button class="btn sm sec" onclick="refresh()">↻</button>`}</div>
+  <div class="note">Lo que llevas ahora en el carro${vend.length ? ', descontando las ventas que aún no se envían' : ''}. En la tarde bodega cuenta lo que vuelve.</div>
+  <div class="card">${d.map(x => { const n = +x.cantidad - (restar[x.producto_id] || 0); return `<div class="li">${pArtP(P(x.producto_id))}<div class="pn"><b>${nm(P(x.producto_id))}</b></div><span class="badge ${n > 0 ? 'b-ok' : 'b-bad'}">${n}</span></div>`; }).join('') || '<div class="mut">No tienes carga asignada hoy.</div>'}</div>`;
+};
 // Kardex de un producto
 async function verKardex(pid) {
   const p = P(pid);
@@ -969,13 +1133,16 @@ async function recibir() {
   refresh();
 }
 V.inventario = async () => {
-  const st = await cached('dpd_stock', LD.stock);
-  const by = {}; st.forEach(s => by[s.producto_id] = (by[s.producto_id] || 0) + +s.cantidad);
+  const st = await cached('dpd_stock', LD.stock), bods = await cached('dpd_bodegas', LD.bodegas).catch(() => []);
+  // Bodega principal (los carros se ven aparte, en Cargue)
+  const tipoB = Object.fromEntries(bods.map(b => [b.id, b.tipo || 'principal']));
+  const by = {}, enCarros = {}; st.forEach(s => { const t = tipoB[s.bodega_id] || 'principal'; if (t === 'principal') by[s.producto_id] = (by[s.producto_id] || 0) + +s.cantidad; else if (t === 'movil') enCarros[s.producto_id] = (enCarros[s.producto_id] || 0) + +s.cantidad; });
+  const totCarros = Object.values(enCarros).reduce((a, x) => a + x, 0);
   sub.inv = sub.inv || 'bajo';
   const venc = await cached('dpd_venc', LD.venc).catch(() => null);
   const l = CAT.filter(p => sub.inv === 'todo' || (by[p.id] || 0) < 10); const mx = Math.max(1, ...Object.values(by));
   const kx = ['administrador','gerencia','bodega'].includes(ROLE);
-  return `<h2>Inventario</h2><div class="seg"><button class="${sub.inv === 'bajo' ? 'on' : ''}" onclick="sub.inv='bajo';refresh()">⚠️ Por agotarse (${CAT.filter(p => (by[p.id] || 0) < 10).length})</button><button class="${sub.inv === 'todo' ? 'on' : ''}" onclick="sub.inv='todo';refresh()">📦 Todo</button>${venc ? `<button class="${sub.inv === 'venc' ? 'on' : ''}" onclick="sub.inv='venc';refresh()">⏰ Por vencer (${venc.length})</button>` : ''}</div>
+  return `<h2>Inventario</h2>${totCarros > 0 ? `<div class="note">🚚 Además hay ${totCarros} unidades en los carros (ver Cargue).</div>` : ''}<div class="seg"><button class="${sub.inv === 'bajo' ? 'on' : ''}" onclick="sub.inv='bajo';refresh()">⚠️ Por agotarse (${CAT.filter(p => (by[p.id] || 0) < 10).length})</button><button class="${sub.inv === 'todo' ? 'on' : ''}" onclick="sub.inv='todo';refresh()">📦 Todo</button>${venc ? `<button class="${sub.inv === 'venc' ? 'on' : ''}" onclick="sub.inv='venc';refresh()">⏰ Por vencer (${venc.length})</button>` : ''}</div>
   ${kx ? '<div class="mut" style="margin:6px 0">Toca un producto para ver su kardex.</div>' : ''}
   ${sub.inv === 'venc' ? `<div class="note">Vencen en los próximos 7 días. Se calcula suponiendo que sale primero lo que vence primero.</div><div class="card">${(venc || []).map(v => `<div class="li" style="cursor:pointer" onclick="verKardex('${v.producto_id}')">${pArtP(P(v.producto_id))}<div class="pn"><b>${nm(P(v.producto_id))}</b><span>Lote ${esc(v.codigo_lote)} · ${v.dias < 0 ? '<b style="color:var(--bad)">vencido hace ' + (-v.dias) + ' días</b>' : v.dias === 0 ? '<b style="color:var(--bad)">vence hoy</b>' : 'vence en ' + v.dias + (v.dias === 1 ? ' día' : ' días')}</span></div><span class="badge ${v.dias <= 2 ? 'b-bad' : 'b-pend'}">${+v.cantidad}</span></div>`).join('') || '<div class="mut">Nada por vencer en los próximos 7 días 🎉</div>'}</div>` : `
   <div class="card">${l.map(p => { const s = by[p.id] || 0; return `<div class="li" ${kx ? `style="cursor:pointer" onclick="verKardex('${p.id}')"` : ''}>${pArtP(p)}<div class="pn"><b>${nm(p)}</b><div class="bar"><i style="width:${Math.max(3, s / mx * 100)}%;${s < 10 ? 'background:linear-gradient(90deg,#E0603F,#B3321E)' : ''}"></i></div></div><span class="badge ${s < 10 ? 'b-bad' : 'b-ok'}">${s}</span></div>`; }).join('')}</div>`}`;
@@ -1023,7 +1190,7 @@ V.resumen = async () => {
   <div class="kpi" style="background:linear-gradient(135deg,#D58A12,#F2BB45)"><div class="k">Clientes</div><div class="v">${nCli ?? 0}</div><span class="ke">👥</span></div>
   <div class="kpi" style="background:linear-gradient(135deg,#B3321E,#E0603F)"><div class="k">Productos activos</div><div class="v">${CAT.length}</div><span class="ke">🥖</span></div></div>
   <h3>Ventas por línea (pedidos)</h3><div class="card chart">${ent.map(([l, v], i) => `<div class="cb"><span class="lab">${esc(l)}</span><div class="tr"><i style="width:${v / mx * 100}%;background:${COL[i % COL.length]}"></i></div><span class="vv">${fmt(v)}</span></div>`).join('') || '<div class="mut">Aún no hay pedidos.</div>'}</div>
-  <div class="grid2" style="margin-top:14px">${[['compras','🧾','Compras'],['recibir','🚛','Recibir'],['inventario','📊','Inventario'],['alistar','📦','Alistar']].filter(x => ROLE === 'administrador' || ['compras','inventario'].includes(x[0])).map(([k, i, n]) => `<button class="btn sec" onclick="go('${k}')">${i} ${n}</button>`).join('')}</div>
+  <div class="grid2" style="margin-top:14px">${[['cargue','🚚','Cargue y liquidación'],['compras','🧾','Compras'],['recibir','🚛','Recibir'],['inventario','📊','Inventario'],['alistar','📦','Alistar']].filter(x => ROLE === 'administrador' || ['cargue','compras','inventario'].includes(x[0])).map(([k, i, n]) => `<button class="btn sec" onclick="go('${k}')">${i} ${n}</button>`).join('')}</div>
   ${ROLE === 'administrador' ? `<button class="card" style="width:100%;border:0;text-align:left;cursor:pointer;font:inherit;margin-top:14px" onclick="go('empresa')"><div class="row"><div><b>🏢 Datos de la empresa</b><div class="mut">${EMP().nit ? 'NIT ' + esc(EMP().nit) + ' · ' : ''}Nombre, NIT, dirección y teléfono de la tirilla</div></div><span style="font-size:22px">›</span></div></button>` : ''}
   <div class="note">Cartera, facturación con Siigo y rutas llegan en las siguientes fases.</div>`;
 };
