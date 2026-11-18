@@ -284,35 +284,64 @@ function friendly(e) {
 async function q(p) { const r = await p; if (r.error) { toast(friendly(r.error), true); throw r.error; } return r.data; }
 
 // ---------- guardado en el celular (para trabajar sin señal) ----------
+// Todo lo guardado lleva el usuario en su nombre (clave:usuario): otro usuario del mismo celular nunca lo lee.
 const lsGet = k => { try { return JSON.parse(localStorage.getItem(k)); } catch (e) { return null; } };
 const lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} };
+const lsDel = k => { try { localStorage.removeItem(k); } catch (e) {} };
+const uk = k => k + ':' + (ME ? ME.id : 'anon');
 const esRed = e => !navigator.onLine || /Failed to fetch|NetworkError|Load failed|network|fetch/i.test((e && (e.message || e)) + '');
 async function cached(key, fn) {
-  try { const d = await fn(); lsSet(key, d); return d; }
-  catch (e) { const d = lsGet(key); if (d && esRed(e)) return d; throw e; }
+  const kk = uk(key), quien = ME && ME.id;
+  // Solo se guarda si el mismo usuario sigue conectado (si salió mientras cargaba, no queda nada)
+  try { const d = await fn(); if (quien && ME && ME.id === quien) lsSet(kk, d); return d; }
+  catch (e) { const d = lsGet(kk); if (d && esRed(e)) return d; throw e; }
 }
-const colaGet = () => lsGet('dpd_cola') || [];
-const colaSet = c => { lsSet('dpd_cola', c); pintarRed(); };
+// Cola de ventas sin enviar: cada venta guarda quién la hizo (dueno) y solo la envía esa persona
+const colaTodas = () => lsGet('dpd_cola') || [];
+const colaGet = () => colaTodas().filter(x => ME && x.dueno === ME.id);
+const colaAjenas = () => colaTodas().filter(x => !ME || x.dueno !== ME.id);
+const colaSet = mias => { lsSet('dpd_cola', [...colaAjenas(), ...mias]); pintarRed(); };
+// Datos de la versión anterior (guardados sin dueño): se asignan al usuario que estaba en este celular
+function migrarLocal(nuevo) {
+  const prev = (lsGet('dpd_me') || {}).ME;
+  const c = colaTodas();
+  if (c.some(x => !x.dueno)) lsSet('dpd_cola', c.map(x => x.dueno ? x : { ...x, dueno: prev ? prev.id : nuevo }));
+  Object.keys(localStorage).filter(k => /^dpd_(clis|tickets|cat_[^:]*)$/.test(k)).forEach(lsDel);
+}
+// Borra lo guardado de un usuario (perfil, catálogo, clientes, ventas del día). La cola no se borra aquí.
+function limpiarLocal(id) {
+  Object.keys(localStorage).forEach(k => { if ((id && k.endsWith(':' + id)) || k === 'dpd_me') lsDel(k); });
+}
 function pintarRed() {
   const el = $('#redpill'); if (!el) return;
   const n = colaGet().length;
   el.innerHTML = !navigator.onLine ? '📵 Sin señal' + (n ? ' · ' + n + ' por enviar' : '') : n ? '⏫ ' + n + ' por enviar' : '';
   el.style.display = el.innerHTML ? '' : 'none';
 }
+// Envía una venta a nombre de quien la hizo. Si la base aún no tiene el script 005, se envía sin ese dato
+// (es seguro: solo se envían ventas del usuario conectado).
+async function rpcVenta(args) {
+  let r; try { r = await sb.rpc('registrar_venta', args); } catch (e) { r = { error: e }; }
+  if (r.error && !esRed(r.error) && /p_vendedor|Could not find the function|schema cache/i.test(r.error.message || '')) {
+    const { p_vendedor, ...viejo } = args;
+    try { r = await sb.rpc('registrar_venta', viejo); } catch (e) { r = { error: e }; }
+  }
+  return r;
+}
 let SYNC = false;
 async function syncCola(manual) {
-  if (SYNC || !navigator.onLine) { if (manual) toast('Sin señal: se enviarán cuando vuelva', true); return; }
+  if (!ME) return;
+  if (SYNC || !navigator.onLine) { if (manual && !SYNC) toast('Sin señal: se enviarán cuando vuelva', true); return; }
   let c = colaGet(); if (!c.length) return;
   SYNC = true; let ok = 0;
-  for (const it of [...c]) {
-    const r = await sb.rpc('registrar_venta', it.args);
-    if (r.error) { if (esRed(r.error)) break; it.error = friendly(r.error); continue; }
-    ok++; c = c.filter(x => x.id !== it.id);
-    const tk = lsGet('dpd_tickets') || []; const t = tk.find(x => x.id === it.id);
-    if (t) { t.numero = r.data[0].numero; t.total = +r.data[0].total; t.pendiente = false; lsSet('dpd_tickets', tk); }
-  }
-  colaSet(c); SYNC = false;
-  if (ok) { toast(ok + (ok > 1 ? ' ventas enviadas' : ' venta enviada')); if (tab === 'contado') refresh(); }
+  try {
+    for (const it of [...c]) {
+      const r = await rpcVenta({ ...it.args, p_vendedor: it.dueno });
+      if (r.error) { if (esRed(r.error)) break; it.error = friendly(r.error); continue; }
+      ok++; c = c.filter(x => x.id !== it.id);
+    }
+  } finally { colaSet(c); SYNC = false; }
+  if (ok) { toast(ok + (ok > 1 ? ' ventas enviadas' : ' venta enviada')); if (tab === 'contado' || tab === 'inicio') refresh(); }
   else if (manual && c.some(x => x.error)) toast('Hay ventas con error: revisa la lista', true);
 }
 window.addEventListener('online', () => { pintarRed(); syncCola(); });
@@ -353,7 +382,27 @@ async function login() {
   if (error) { showLogin(friendly(error)); return; }
   await loadMe();
 }
-async function logout() { await sb.auth.signOut(); ME = null; showLogin(); }
+async function logout(forzar) {
+  if (ME && colaGet().length && !forzar) {
+    await syncCola();
+    const pend = colaGet();
+    if (pend.length) {
+      const soloErrores = navigator.onLine && pend.every(x => x.error);
+      sheet(`<h2>⚠️ Tienes ${pend.length} ${pend.length > 1 ? 'ventas' : 'venta'} sin enviar</h2>
+      <div class="mut">Antes de salir hay que enviarlas, para que no se pierdan ni queden a nombre de otra persona.</div>
+      ${soloErrores ? `<div class="note warnnote">${pend.map(x => '⚠️ ' + esc(x.error)).join('<br>')}<br><br>El servidor no las aceptó. Puedes salir: quedan guardadas en este celular y se reintentan cuando vuelvas a entrar con tu usuario. Avísale a la administración.</div>`
+        : `<div class="note warnnote">📵 ${navigator.onLine ? 'No se pudieron enviar todavía.' : 'No hay señal.'} Conéctate a internet y toca <b>Enviar y salir</b>.</div>`}
+      <div class="grid2"><button class="btn sec" onclick="closeSheet()">Seguir en la app</button>
+      ${soloErrores ? '<button class="btn" onclick="closeSheet();logout(true)">Salir</button>' : '<button class="btn" onclick="closeSheet();logout()">Enviar y salir</button>'}</div>`);
+      return;
+    }
+  }
+  const id = ME && ME.id;
+  ME = null; limpiarLocal(id);
+  try { await sb.auth.signOut({ scope: 'local' }); } catch (e) {}
+  ME = null; ROLE = null; CAT = []; C = {}; cart = {}; tab = null;
+  showLogin();
+}
 async function loadMe() {
   try {
     const { data: { user }, error: ue } = await sb.auth.getUser();
@@ -365,6 +414,7 @@ async function loadMe() {
     if (!data.activo) return showLogin('Tu usuario está desactivado.');
     ME = { ...data, email: user.email }; ROLE = data.rol;
     CAT = await q(sb.from('productos').select('id,codigo,nombre,linea,categoria,iva_pct,foto_path').eq('activo', true).order('linea').order('nombre'));
+    migrarLocal(ME.id);
     lsSet('dpd_me', { ME, CAT });
   } catch (e) {
     const c = lsGet('dpd_me');
@@ -476,7 +526,7 @@ const track = e => { const k = STEPS.indexOf(e === 'entregado_parcial' ? 'entreg
   <div class="tlab"><span>Enviado</span><span>Aprobado</span><span>Alistando</span><span>En camino</span><span>Entregado</span></div>`; };
 const pedTotal = p => p.pedido_items.reduce((a, i) => a + i.cantidad * i.precio_unitario, 0);
 async function loadPedidos(estados) {
-  let r = sb.from('pedidos').select('id,numero,estado,fecha,fecha_entrega,origen,observaciones,cliente_id,clientes(razon_social,direccion,cupo),pedido_items(producto_id,cantidad,precio_unitario,descuento_pct)').order('numero', { ascending: false }).limit(60);
+  let r = sb.from('pedidos').select('id,numero,estado,fecha,fecha_entrega,origen,observaciones,cliente_id,vendedor_id,clientes(razon_social,direccion,cupo),pedido_items(producto_id,cantidad,precio_unitario,descuento_pct)').order('numero', { ascending: false }).limit(60);
   if (estados) r = r.in('estado', estados);
   const d = await q(r); C.ped = Object.fromEntries(d.map(p => [p.id, p])); return d;
 }
@@ -487,8 +537,8 @@ function pedCard(p, i = 0) {
   if (['administrador','gerencia'].includes(ROLE) && p.estado === 'enviado') { A('rechazado', 'Rechazar', 'sec'); A('aprobado', '✓ Aprobar', 'okb'); }
   if (['administrador','bodega'].includes(ROLE) && p.estado === 'aprobado') A('en_alistamiento', '📦 Empezar a alistar');
   if (['administrador','bodega'].includes(ROLE) && ['aprobado','en_alistamiento'].includes(p.estado)) A('despachado', '🚚 Despachar', 'okb');
-  if (['administrador','conductor','vendedor'].includes(ROLE) && p.estado === 'despachado') { A('entregado_parcial', 'Parcial', 'sec'); A('entregado', '✓ Entregado', 'okb'); }
-  if (p.estado === 'enviado' && (ROLE === 'cliente' || ROLE === 'vendedor')) A('cancelado', 'Cancelar', 'sec');
+  if (p.estado === 'despachado' && (ROLE === 'administrador' || ROLE === 'conductor' || (ROLE === 'vendedor' && p.vendedor_id === ME.id))) { A('entregado_parcial', 'Parcial', 'sec'); A('entregado', '✓ Entregado', 'okb'); }
+  if (p.estado === 'enviado' && ((ROLE === 'cliente' && p.origen === 'cliente') || (ROLE === 'vendedor' && p.vendedor_id === ME.id))) A('cancelado', 'Cancelar', 'sec');
   const over = ['administrador','gerencia'].includes(ROLE) && p.estado === 'enviado' && p.clientes && +p.clientes.cupo > 0 && pedTotal(p) > +p.clientes.cupo;
   return `<div class="card" ${dl(i)}><div class="row"><b class="serif" style="font-size:18px">Pedido #${p.numero}</b>${badge(p.estado)}</div>
   <div class="mut" style="margin-top:2px">${esc(p.clientes?.razon_social || '')} · ${fdate(p.fecha)}${p.fecha_entrega ? ' · entrega ' + fdate(p.fecha_entrega + 'T12:00') : ''}</div>
@@ -508,28 +558,40 @@ function verPed(id) {
 const pArtP = pr => `<div class="th" style="background:${bgc2(pr)}">${art2(pr)}</div>`;
 async function estado(id, est) {
   const p = C.ped[id];
-  await q(sb.rpc('cambiar_estado_pedido', { p_pedido: id, p_estado: est }));
-  if (est === 'despachado') {          // descuenta inventario de la bodega principal
-    const bod = (await q(sb.from('bodegas').select('id').limit(1)))[0];
-    if (bod) await q(sb.from('movimientos_inventario').insert(p.pedido_items.map(i => ({ bodega_id: bod.id, producto_id: i.producto_id, tipo: 'salida_venta', cantidad: i.cantidad, referencia_tipo: 'pedido', referencia_id: id }))));
+  let r; try { r = await sb.rpc('cambiar_estado_pedido', { p_pedido: id, p_estado: est }); } catch (e) { r = { error: e }; }
+  if (r.error) {
+    toast(esRed(r.error) ? 'Sin conexión: el pedido #' + p.numero + ' no cambió. Intenta de nuevo cuando tengas señal.' : friendly(r.error), true);
+    return;
   }
-  toast('Pedido #' + p.numero + ': ' + EST[est][0]); refresh();
+  // El servidor descuenta el inventario en la misma operación del despacho y avisa si faltaron existencias
+  const falt = (r.data && r.data.sin_existencias) || [];
+  if (est === 'despachado' && falt.length) {
+    sheet(`<h2>🚚 Pedido #${p.numero} despachado</h2><div class="note warnnote">Ojo: en el inventario no alcanzaba para estos productos. Revisa las existencias o registra la mercancía que llegó.</div>
+    <div class="card">${falt.map(f => `<div class="li"><div class="pn"><b>${esc(nice(f.producto))}</b><span>Pedido ${+f.pedido} · había ${+f.disponible}</span></div><span class="badge b-bad">${+f.disponible - +f.pedido}</span></div>`).join('')}</div>
+    <button class="btn" onclick="closeSheet()">Entendido</button>`);
+  } else toast('Pedido #' + p.numero + ': ' + EST[est][0]);
+  refresh();
 }
 
 // ---------- vistas ----------
 const V = {};
 V.inicio = async () => {
-  const peds = await loadPedidos();
-  const mes = new Date(); mes.setDate(1);
-  const venta = peds.filter(p => new Date(p.fecha) >= mes && !['rechazado','cancelado','borrador'].includes(p.estado)).reduce((a, p) => a + pedTotal(p), 0);
-  const vend = (await q(sb.from('vendedores').select('meta_mensual,descuento_max_pct').eq('perfil_id', ME.id).maybeSingle())) || {};
-  const meta = +vend.meta_mensual || 0, pct = meta ? Math.min(100, venta / meta * 100) : 0;
+  // El avance lo calcula el servidor: pedidos aprobados en adelante + ventas de contado del mes, solo de este vendedor
+  const [peds, av] = await Promise.all([
+    cached('dpd_peds', () => loadPedidos()).catch(() => []),
+    cached('dpd_avance', () => q(sb.rpc('avance_vendedor'))).catch(() => null)]);
+  const a = (Array.isArray(av) ? av[0] : av) || {};
+  const venta = +a.total || 0, meta = +a.meta || 0, pct = meta ? Math.min(100, venta / meta * 100) : 0;
+  const mios = peds.filter(p => p.vendedor_id === ME.id);
   return `<h2>¡Hola, ${esc(ME.nombre.split(' ')[0])}! 👋</h2>
-  <div class="hero"><div style="flex:1"><div class="lbl">Vendido este mes</div><div class="val">${fmt(venta)}</div><div style="font-size:13px;opacity:.8;font-weight:700">${meta ? 'Meta ' + fmt(meta) : 'Sin meta asignada'} · descuento máx. ${+vend.descuento_max_pct || 0}%</div></div>${ring(pct)}</div>
+  <div class="hero"><div style="flex:1"><div class="lbl">Vendido este mes</div><div class="val">${fmt(venta)}</div>
+  <div style="font-size:12px;opacity:.85;font-weight:700">Pedidos ${fmt(a.pedidos)} · Contado ${fmt(a.contado)}</div>
+  <div style="font-size:13px;opacity:.8;font-weight:700">${meta ? 'Meta ' + fmt(meta) : 'Sin meta asignada'} · descuento máx. ${+a.descuento_max || 0}%</div></div>${ring(pct)}</div>
+  ${av ? '' : '<div class="note warnnote">No se pudo calcular el avance de la meta en este momento.</div>'}
   <div class="tiles"><button class="tile t1" onclick="go('vender')"><span class="em">🛒</span><b>Nuevo pedido</b><span>Escoge el cliente</span></button>
-  <button class="tile t4" onclick="go('pedidos')"><span class="em">📋</span><b>Mis pedidos</b><span>${peds.filter(p => p.estado === 'enviado').length} por aprobar</span></button>
+  <button class="tile t4" onclick="go('pedidos')"><span class="em">📋</span><b>Mis pedidos</b><span>${mios.filter(p => p.estado === 'enviado').length} por aprobar</span></button>
   <button class="tile t3" onclick="go('contado')"><span class="em">💵</span><b>Venta de contado</b><span>Tirilla o factura</span></button>
-  <button class="tile t2" onclick="go('clientes')"><span class="em">👥</span><b>Mis clientes</b><span>${peds.filter(p => p.estado === 'despachado').length} pedidos en camino</span></button></div>`;
+  <button class="tile t2" onclick="go('clientes')"><span class="em">👥</span><b>Mis clientes</b><span>${mios.filter(p => p.estado === 'despachado').length} pedidos en camino</span></button></div>`;
 };
 const ring = pct => { const r = 34, c = 2 * Math.PI * r; return `<svg class="ring" width="86" height="86" viewBox="0 0 86 86"><circle cx="43" cy="43" r="${r}" stroke="rgba(255,255,255,.15)" stroke-width="10" fill="none"/><circle cx="43" cy="43" r="${r}" stroke="#F6C552" stroke-width="10" fill="none" stroke-linecap="round" stroke-dasharray="${c}" stroke-dashoffset="${c * (1 - pct / 100)}" transform="rotate(-90 43 43)"/><text x="43" y="49" text-anchor="middle" fill="#fff" font-size="17" font-weight="900" font-family="Nunito Sans">${Math.round(pct)}%</text></svg>`; };
 
@@ -890,19 +952,35 @@ V.contado = async () => {
   C.clis = Object.fromEntries(clis.map(c => [c.id, c]));
   if (C.vcli && !C.clis[C.vcli]) C.vcli = '';
   await loadCatalog(C.vcli || null);
-  const cola = colaGet(), hoy = new Date().toDateString();
-  const deHoy = (lsGet('dpd_tickets') || []).filter(t => new Date(t.fecha).toDateString() === hoy);
+  const cola = colaGet(), ajenas = colaAjenas().length, ini = new Date(); ini.setHours(0, 0, 0, 0);
+  // Ventas de hoy: las registradas en la base (sirven en cualquier celular) + las que esperan señal en este
+  const vs = await cached('dpd_ventas_hoy', () => q(sb.from('ventas')
+    .select('id,numero,fecha,modalidad,medio_pago,clientes(razon_social,tipo_documento,numero_documento),venta_items(producto_id,cantidad,precio_unitario,descuento_pct)')
+    .eq('vendedor_id', ME.id).gte('fecha', ini.toISOString()).order('fecha', { ascending: false }))).catch(() => []);
+  const map = {};
+  vs.forEach(v => { map[v.id] = ticketDeVenta(v); });
+  cola.forEach(x => { if (x.ticket && !map[x.id]) map[x.id] = x.ticket; });
+  const deHoy = Object.values(map).filter(t => new Date(t.fecha) >= ini).sort((a, b) => new Date(b.fecha) - new Date(a.fecha));
+  C.tk = map;
   const tot = deHoy.reduce((a, t) => a + t.total, 0);
-  return `${cola.length ? `<div class="note warnnote">⏫ ${cola.length} ${cola.length > 1 ? 'ventas guardadas' : 'venta guardada'} en este celular sin enviar.${cola.some(x => x.error) ? '<br>⚠️ ' + cola.filter(x => x.error).map(x => esc(x.error)).join('<br>⚠️ ') : ''}<br><button class="btn sm" style="margin-top:8px" onclick="syncCola(true)">Enviar ahora</button></div>` : ''}
+  return `${ajenas ? `<div class="note">📱 En este celular hay ${ajenas} ${ajenas > 1 ? 'ventas' : 'venta'} de otro usuario esperando a que esa persona vuelva a entrar.</div>` : ''}${cola.length ? `<div class="note warnnote">⏫ ${cola.length} ${cola.length > 1 ? 'ventas guardadas' : 'venta guardada'} en este celular sin enviar.${cola.some(x => x.error) ? '<br>⚠️ ' + cola.filter(x => x.error).map(x => esc(x.error)).join('<br>⚠️ ') : ''}<br><button class="btn sm" style="margin-top:8px" onclick="syncCola(true)">Enviar ahora</button></div>` : ''}
   <h2>Venta de contado</h2>
-  <div class="hero"><div style="flex:1"><div class="lbl">Vendido hoy en este celular</div><div class="val">${fmt(tot)}</div><div style="font-size:13px;opacity:.8;font-weight:700">${deHoy.length} ${deHoy.length === 1 ? 'venta' : 'ventas'}</div></div><div style="font-size:42px">💵</div></div>
+  <div class="hero"><div style="flex:1"><div class="lbl">Vendido hoy</div><div class="val">${fmt(tot)}</div><div style="font-size:13px;opacity:.8;font-weight:700">${deHoy.length} ${deHoy.length === 1 ? 'venta' : 'ventas'}</div></div><div style="font-size:42px">💵</div></div>
   <div class="card"><label style="margin-top:0">Cliente</label><select onchange="C.vcli=this.value;cart={};refresh()"><option value="">🧍 Consumidor final</option>${clis.map(c => `<option value="${c.id}" ${C.vcli === c.id ? 'selected' : ''}>${esc(c.razon_social)}</option>`).join('')}</select>
   <div class="mut" style="margin-top:6px">${C.vcli ? 'Precios de la lista de este cliente.' : 'Precios de la lista General.'}</div></div>
   <div id="catwrap">${catalogHTML()}</div>
   <h3>Ventas de hoy</h3>${deHoy.map((t, i) => `<div class="card" ${dl(i)}><div class="row"><b>${t.numero ? 'Venta V-' + t.numero : 'Venta sin enviar'}</b>${t.pendiente ? '<span class="badge b-pend">Por enviar</span>' : `<span class="badge ${t.modalidad === 'factura' ? 'b-info' : 'b-ok'}">${t.modalidad === 'factura' ? 'Por facturar' : 'Tirilla'}</span>`}</div>
    <div class="mut">${new Date(t.fecha).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' })} · ${esc(t.cliente ? t.cliente.nombre : 'Consumidor final')} · ${esc(MEDIO_N[t.medio] || t.medio)}</div>
-   <div class="row" style="margin-top:8px"><span class="big" style="font-size:20px">${fmt(t.total)}</span><button class="btn sm sec" onclick="verTicket('${t.id}')">🧾 Ver</button></div></div>`).join('') || '<div class="empty"><span class="e">🧾</span>Aún no hay ventas hoy en este celular</div>'}`;
+   <div class="row" style="margin-top:8px"><span class="big" style="font-size:20px">${fmt(t.total)}</span><button class="btn sm sec" onclick="verTicket('${t.id}')">🧾 Ver</button></div></div>`).join('') || '<div class="empty"><span class="e">🧾</span>Aún no hay ventas hoy</div>'}`;
 };
+function ticketDeVenta(v) {
+  const it = v.venta_items || [];
+  return { id: v.id, fecha: v.fecha, modalidad: v.modalidad, medio: v.medio_pago, numero: v.numero, pendiente: false, vendedor: ME.nombre,
+    desc: +((it[0] || {}).descuento_pct || 0),
+    cliente: v.clientes ? { nombre: v.clientes.razon_social, doc: `${v.clientes.tipo_documento || ''} ${v.clientes.numero_documento || ''}`.trim() } : null,
+    lineas: it.map(i => ({ nombre: P(i.producto_id).nombre, n: +i.cantidad, precio: +i.precio_unitario })),
+    total: it.reduce((a, i) => a + i.cantidad * i.precio_unitario, 0) };
+}
 function reviewVenta() {
   const it = cartItems(), cli = C.vcli ? C.clis[C.vcli] : null;
   sheet(`<h2>Cobrar</h2><div class="card row" style="justify-content:flex-start">${cli ? av(cli.razon_social) : '<div class="av2" style="background:#8A7462">🧍</div>'}<div><b>${esc(cli ? cli.razon_social : 'Consumidor final')}</b>${cli ? `<div class="mut">${esc(cli.tipo_documento || '')} ${esc(cli.numero_documento || '')}</div>` : ''}</div></div>
@@ -926,20 +1004,17 @@ async function registrarVenta() {
   b.disabled = true; b.textContent = 'Registrando…';
   const id = (crypto.randomUUID ? crypto.randomUUID() : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => { const r = Math.random() * 16 | 0; return (c === 'x' ? r : (r & 3 | 8)).toString(16); }));
   const cli = C.vcli ? C.clis[C.vcli] : null, fecha = new Date().toISOString();
-  const args = { p_id: id, p_cliente: C.vcli || null, p_modalidad: modalidad, p_medio: medio, p_fecha: fecha,
+  const args = { p_id: id, p_cliente: C.vcli || null, p_modalidad: modalidad, p_medio: medio, p_fecha: fecha, p_vendedor: ME.id,
     p_items: cartItems().map(i => ({ producto_id: i.id, cantidad: i.n, descuento_pct: desc })) };
   const t = { id, fecha, modalidad, medio, desc, vendedor: ME.nombre, numero: null, pendiente: true, total: totNeto(),
     cliente: cli ? { nombre: cli.razon_social, doc: `${cli.tipo_documento || ''} ${cli.numero_documento || ''}`.trim() } : null,
     lineas: cartItems().map(i => ({ nombre: i.p.nombre, n: i.n, precio: Math.round(i.p.precio * (1 - desc / 100) * 100) / 100 })) };
-  try {
-    const r = await sb.rpc('registrar_venta', args);
-    if (r.error) throw r.error;
-    t.numero = r.data[0].numero; t.total = +r.data[0].total; t.pendiente = false;
-  } catch (e) {
-    if (!esRed(e)) { toast(friendly(e), true); b.disabled = false; b.textContent = '✓ Registrar venta'; return; }
-    colaSet([...colaGet(), { id, args }]);
-  }
-  const tk = lsGet('dpd_tickets') || []; tk.unshift(t); lsSet('dpd_tickets', tk.slice(0, 200));
+  const r = await rpcVenta(args);
+  if (r.error) {
+    if (!esRed(r.error)) { toast(friendly(r.error), true); b.disabled = false; b.textContent = '✓ Registrar venta'; return; }
+    colaSet([...colaGet(), { id, dueno: ME.id, args, ticket: t }]);   // se guarda con su dueño y se envía después
+  } else { t.numero = r.data[0].numero; t.total = +r.data[0].total; t.pendiente = false; }
+  C.tk = { ...(C.tk || {}), [id]: t };
   cart = {}; renderCart(); verTicket(id);
   toast(t.pendiente ? 'Sin señal: venta guardada, se enviará sola' : 'Venta V-' + t.numero + ' registrada');
 }
@@ -955,7 +1030,7 @@ function ticketHTML(t) {
   <div class="c">${t.modalidad === 'factura' ? 'La factura electrónica se enviará<br>a su correo.' : ''}<br><b>Este comprobante no es factura electrónica.</b><br><br>¡Gracias por su compra!</div></div>`;
 }
 function verTicket(id) {
-  const t = (lsGet('dpd_tickets') || []).find(x => x.id === id); if (!t) return;
+  const t = (C.tk || {})[id]; if (!t) return;
   const txt = `${BRAND}\nComprobante de venta ${t.numero ? 'V-' + t.numero : '(pendiente)'}\n${new Date(t.fecha).toLocaleString('es-CO')}\nCliente: ${t.cliente ? t.cliente.nombre : 'Consumidor final'}\n` +
     t.lineas.map(l => `${l.n} x ${nice(l.nombre)}: ${fmt(l.n * l.precio)}`).join('\n') + `\nTOTAL: ${fmt(t.total)}\nPago: ${MEDIO_N[t.medio] || t.medio}\n(No es factura electrónica)`;
   sheet(`${ticketHTML(t)}<div class="grid2" style="margin-top:14px"><button class="btn" onclick="imprimir()">🖨️ Imprimir</button><a class="btn sec" style="text-decoration:none" href="https://wa.me/?text=${encodeURIComponent(txt)}" target="_blank" rel="noopener">📲 WhatsApp</a></div>
