@@ -281,7 +281,8 @@ function friendly(e) {
   if (/Failed to fetch|NetworkError/i.test(m)) return 'Sin conexión a internet. Intenta de nuevo.';
   return m.replace(/^.*ERROR:\s*/,'');
 }
-async function q(p) { const r = await p; if (r.error) { toast(friendly(r.error), true); throw r.error; } return r.data; }
+let SILENCIO = 0;   // mientras se usan datos guardados, la falta de señal no muestra aviso rojo
+async function q(p) { const r = await p; if (r.error) { if (!(SILENCIO && esRed(r.error))) toast(friendly(r.error), true); throw r.error; } return r.data; }
 
 // ---------- guardado en el celular (para trabajar sin señal) ----------
 // Todo lo guardado lleva el usuario en su nombre (clave:usuario): otro usuario del mismo celular nunca lo lee.
@@ -291,10 +292,12 @@ const lsDel = k => { try { localStorage.removeItem(k); } catch (e) {} };
 const uk = k => k + ':' + (ME ? ME.id : 'anon');
 const esRed = e => !navigator.onLine || /Failed to fetch|NetworkError|Load failed|network|fetch/i.test((e && (e.message || e)) + '');
 async function cached(key, fn) {
-  const kk = uk(key), quien = ME && ME.id;
+  const kk = uk(key), quien = ME && ME.id, hay = lsGet(kk) != null;
+  if (hay) SILENCIO++;
   // Solo se guarda si el mismo usuario sigue conectado (si salió mientras cargaba, no queda nada)
   try { const d = await fn(); if (quien && ME && ME.id === quien) lsSet(kk, d); return d; }
   catch (e) { const d = lsGet(kk); if (d && esRed(e)) return d; throw e; }
+  finally { if (hay) SILENCIO--; }
 }
 // Cola de ventas sin enviar: cada venta guarda quién la hizo (dueno) y solo la envía esa persona
 const colaTodas = () => lsGet('dpd_cola') || [];
@@ -318,6 +321,11 @@ function pintarRed() {
   el.innerHTML = !navigator.onLine ? '📵 Sin señal' + (n ? ' · ' + n + ' por enviar' : '') : n ? '⏫ ' + n + ' por enviar' : '';
   el.style.display = el.innerHTML ? '' : 'none';
 }
+// Envía un pedido completo en una sola operación (script 006). Si la base aún no lo tiene, error claro.
+async function rpcPedido(args) {
+  let r; try { r = await sb.rpc('registrar_pedido', args); } catch (e) { r = { error: e }; }
+  return r;
+}
 // Envía una venta a nombre de quien la hizo. Si la base aún no tiene el script 005, se envía sin ese dato
 // (es seguro: solo se envían ventas del usuario conectado).
 async function rpcVenta(args) {
@@ -336,13 +344,13 @@ async function syncCola(manual) {
   SYNC = true; let ok = 0;
   try {
     for (const it of [...c]) {
-      const r = await rpcVenta({ ...it.args, p_vendedor: it.dueno });
+      const r = it.tipo === 'pedido' ? await rpcPedido({ ...it.args, p_autor: it.dueno }) : await rpcVenta({ ...it.args, p_vendedor: it.dueno });
       if (r.error) { if (esRed(r.error)) break; it.error = friendly(r.error); continue; }
       ok++; c = c.filter(x => x.id !== it.id);
     }
   } finally { colaSet(c); SYNC = false; }
-  if (ok) { toast(ok + (ok > 1 ? ' ventas enviadas' : ' venta enviada')); if (tab === 'contado' || tab === 'inicio') refresh(); }
-  else if (manual && c.some(x => x.error)) toast('Hay ventas con error: revisa la lista', true);
+  if (ok) { toast(ok + (ok > 1 ? ' pendientes enviados' : ' pendiente enviado')); if (['contado','inicio','pedidos'].includes(tab)) refresh(); }
+  else if (manual && c.some(x => x.error)) toast('Hay pendientes con error: revisa Pedidos o Contado', true);
 }
 window.addEventListener('online', () => { pintarRed(); syncCola(); });
 window.addEventListener('offline', pintarRed);
@@ -388,8 +396,10 @@ async function logout(forzar) {
     const pend = colaGet();
     if (pend.length) {
       const soloErrores = navigator.onLine && pend.every(x => x.error);
-      sheet(`<h2>⚠️ Tienes ${pend.length} ${pend.length > 1 ? 'ventas' : 'venta'} sin enviar</h2>
-      <div class="mut">Antes de salir hay que enviarlas, para que no se pierdan ni queden a nombre de otra persona.</div>
+      const nP = pend.filter(x => x.tipo === 'pedido').length, nV = pend.length - nP;
+      const que = [nV ? nV + (nV > 1 ? ' ventas' : ' venta') : '', nP ? nP + (nP > 1 ? ' pedidos' : ' pedido') : ''].filter(Boolean).join(' y ');
+      sheet(`<h2>⚠️ Tienes ${que} sin enviar</h2>
+      <div class="mut">Antes de salir hay que enviarlos, para que no se pierdan ni queden a nombre de otra persona.</div>
       ${soloErrores ? `<div class="note warnnote">${pend.map(x => '⚠️ ' + esc(x.error)).join('<br>')}<br><br>El servidor no las aceptó. Puedes salir: quedan guardadas en este celular y se reintentan cuando vuelvas a entrar con tu usuario. Avísale a la administración.</div>`
         : `<div class="note warnnote">📵 ${navigator.onLine ? 'No se pudieron enviar todavía.' : 'No hay señal.'} Conéctate a internet y toca <b>Enviar y salir</b>.</div>`}
       <div class="grid2"><button class="btn sec" onclick="closeSheet()">Seguir en la app</button>
@@ -422,8 +432,27 @@ async function loadMe() {
     ME = c.ME; ROLE = ME.rol; CAT = c.CAT; toast('Sin señal: trabajando con los datos guardados');
   }
   C.prod = Object.fromEntries(CAT.map(p => [p.id, p]));
-  shell(); await go(TABS[ROLE][0][0]); pintarRed(); syncCola();
+  shell(); await go(TABS[ROLE][0][0]); pintarRed(); syncCola(); precargar();
 }
+// Con señal, deja guardado en el celular lo necesario para vender y tomar pedidos sin señal
+async function precargar() {
+  if (!navigator.onLine || !['vendedor','administrador'].includes(ROLE)) return;
+  const quien = ME.id;
+  SILENCIO++;
+  try {
+    const clis = await cached('dpd_clis', leerClientes);
+    C.clis = { ...(C.clis || {}), ...Object.fromEntries(clis.map(c => [c.id, c])) };
+    await loadCatalog(null, true);
+    if (ROLE === 'vendedor') await cached('dpd_peds_todos', () => loadPedidos()).catch(() => {});
+    const vistas = new Set();
+    for (const c of clis) {
+      if (!ME || ME.id !== quien || !navigator.onLine) break;
+      const k = c.lista_precio_id || c.id; if (vistas.has(k)) continue; vistas.add(k);
+      await loadCatalog(c.id, true);
+    }
+  } catch (e) {} finally { SILENCIO--; }
+}
+const leerClientes = () => q(sb.from('clientes').select('id,razon_social,direccion,cupo,lista_precio_id,tipo_documento,numero_documento').eq('activo', true).order('razon_social'));
 
 // ---------- estructura ----------
 function shell() {
@@ -456,8 +485,11 @@ function art2(p) { const f = fotoDe(p); return f ? `<img src="${fotoURL(f)}" alt
 function bgc2(p) { return fotoDe(p) ? '#fff' : bgc_(adapt(p)); }
 
 // ---------- catálogo y carrito ----------
-async function loadCatalog(cliente) {
-  const data = await cached('dpd_cat_' + (cliente || 'gen'), () => q(sb.rpc('catalogo', cliente ? { p_cliente: cliente } : {})));
+async function loadCatalog(cliente, soloGuardar) {
+  const cl = cliente && C.clis && C.clis[cliente];
+  const llave = !cliente ? 'gen' : cl && cl.lista_precio_id ? 'l_' + cl.lista_precio_id : cliente;
+  const data = await cached('dpd_cat_' + llave, () => q(sb.rpc('catalogo', cliente ? { p_cliente: cliente } : {})));
+  if (soloGuardar) return;
   C.cat = data; C.catBy = Object.fromEntries(data.map(x => [x.producto_id, x]));
 }
 function catalogHTML() {
@@ -500,20 +532,25 @@ function review() {
   <label>Observaciones</label><input id="obs" placeholder="Opcional">
   <div style="height:14px"></div><button class="btn" id="sendb" onclick="sendOrder()">📤 Enviar pedido</button>`);
 }
+function nuevoId() { return crypto.randomUUID ? crypto.randomUUID() : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => { const r = Math.random() * 16 | 0; return (c === 'x' ? r : (r & 3 | 8)).toString(16); }); }
 async function sendOrder() {
   const b = $('#sendb'); b.disabled = true; b.textContent = 'Enviando…';
-  try {
-    const cliente_id = ROLE === 'cliente' ? ME.cliente_id : C.cli.id;
-    const origen = ROLE === 'cliente' ? 'cliente' : ROLE === 'vendedor' ? 'vendedor' : 'administracion';
-    const ped = await q(sb.from('pedidos').insert({ cliente_id, origen, vendedor_id: ROLE === 'vendedor' ? ME.id : null,
-      fecha_entrega: $('#fen').value || null, observaciones: $('#obs').value || null }).select('id,numero').single());
-    const dsc = +($('#dsc')?.value || 0);
-    try {
-      await q(sb.from('pedido_items').insert(cartItems().map(i => ({ pedido_id: ped.id, producto_id: i.id, cantidad: i.n, descuento_pct: dsc }))));
-      await q(sb.rpc('cambiar_estado_pedido', { p_pedido: ped.id, p_estado: 'enviado' }));
-    } catch (e) { await sb.from('pedidos').delete().eq('id', ped.id); throw e; }
-    cart = {}; closeSheet(); toast('Pedido #' + ped.numero + ' enviado'); go('pedidos');
-  } catch (e) { b.disabled = false; b.textContent = '📤 Enviar pedido'; }
+  const cli = ROLE === 'cliente' ? null : C.cli, dsc = +($('#dsc')?.value || 0), id = nuevoId();
+  const args = { p_id: id, p_cliente: ROLE === 'cliente' ? ME.cliente_id : cli.id, p_items: cartItems().map(i => ({ producto_id: i.id, cantidad: i.n })),
+    p_descuento: dsc, p_fecha_entrega: $('#fen').value || null, p_obs: $('#obs').value || null, p_fecha: new Date().toISOString(), p_autor: ME.id };
+  const r = await rpcPedido(args);
+  if (r.error && !esRed(r.error)) {
+    toast(/registrar_pedido|schema cache/i.test(r.error.message || '') ? 'Falta correr el script 006 en Supabase' : friendly(r.error), true);
+    b.disabled = false; b.textContent = '📤 Enviar pedido'; return;
+  }
+  if (r.error) {
+    // Sin señal: queda guardado con su dueño y se envía solo cuando vuelva la señal
+    const resumen = { id, fecha: args.p_fecha, cliente: cli ? cli.razon_social : (ME.nombre || ''), desc: dsc,
+      lineas: cartItems().map(i => ({ producto_id: i.id, n: i.n, precio: i.p.precio })), obs: args.p_obs };
+    colaSet([...colaGet(), { id, dueno: ME.id, tipo: 'pedido', args, pedido: resumen }]);
+    cart = {}; closeSheet(); toast('📵 Sin señal: el pedido quedó guardado y se enviará solo'); go('pedidos'); return;
+  }
+  cart = {}; closeSheet(); toast('Pedido #' + r.data[0].numero + ' enviado'); go('pedidos');
 }
 
 // ---------- pedidos ----------
@@ -546,6 +583,18 @@ function pedCard(p, i = 0) {
   ${over ? `<div class="note warnnote">⚠️ Este pedido supera el cupo del cliente (${fmt(p.clientes.cupo)})</div>` : ''}
   <div class="row" style="margin-top:10px"><span class="big" style="font-size:20px">${fmt(pedTotal(p))}</span><button class="btn sm sec" onclick="verPed('${p.id}')">Ver detalle</button></div>
   ${acts.length ? `<div class="acts">${acts.join('')}</div>` : ''}</div>`;
+}
+function pedPendCard(x, i = 0) {
+  const p = x.pedido, tot = p.lineas.reduce((a, l) => a + l.n * l.precio * (1 - (p.desc || 0) / 100), 0);
+  return `<div class="card" ${dl(i)} style="border:2px dashed #D9486A"><div class="row"><b class="serif" style="font-size:18px">Pedido sin número</b><span class="badge b-pend">📵 Por enviar</span></div>
+  <div class="mut" style="margin-top:2px">${esc(p.cliente)} · ${fdate(p.fecha)}</div>
+  ${x.error ? `<div class="note warnnote">⚠️ El sistema no lo aceptó: ${esc(x.error)}</div>` : '<div class="mut">Se envía solo cuando haya señal. El número y el precio final los pone el sistema.</div>'}
+  <div class="card" style="margin-top:8px">${p.lineas.map(l => { const pr = P(l.producto_id); return `<div class="li">${pArtP(pr)}<div class="pn"><b>${nm(pr)}</b><span>${l.n} × ${fmt(l.precio)}</span></div></div>`; }).join('')}</div>
+  <div class="row" style="margin-top:10px"><span class="big" style="font-size:20px">≈ ${fmt(tot)}</span>${x.error ? `<button class="btn sm sec" onclick="quitarPend('${x.id}')">Quitar</button>` : `<button class="btn sm" onclick="syncCola(true)">⏫ Enviar ahora</button>`}</div></div>`;
+}
+function quitarPend(id) {
+  sheet(`<h2>¿Quitar este pedido?</h2><div class="mut">El sistema no lo aceptó. Si lo quitas, se borra de este celular; puedes volver a tomarlo corregido.</div>
+  <div class="grid2"><button class="btn sec" onclick="closeSheet()">No</button><button class="btn" onclick="colaSet(colaGet().filter(x=>x.id!=='${id}'));closeSheet();refresh()">Sí, quitar</button></div>`);
 }
 function verPed(id) {
   const p = C.ped[id];
@@ -596,7 +645,7 @@ V.inicio = async () => {
 const ring = pct => { const r = 34, c = 2 * Math.PI * r; return `<svg class="ring" width="86" height="86" viewBox="0 0 86 86"><circle cx="43" cy="43" r="${r}" stroke="rgba(255,255,255,.15)" stroke-width="10" fill="none"/><circle cx="43" cy="43" r="${r}" stroke="#F6C552" stroke-width="10" fill="none" stroke-linecap="round" stroke-dasharray="${c}" stroke-dashoffset="${c * (1 - pct / 100)}" transform="rotate(-90 43 43)"/><text x="43" y="49" text-anchor="middle" fill="#fff" font-size="17" font-weight="900" font-family="Nunito Sans">${Math.round(pct)}%</text></svg>`; };
 
 V.vender = async () => {
-  const clis = await cached('dpd_clis', () => q(sb.from('clientes').select('id,razon_social,direccion,cupo,lista_precio_id,tipo_documento,numero_documento').eq('activo', true).order('razon_social')));
+  const clis = await cached('dpd_clis', leerClientes);
   C.clis = Object.fromEntries(clis.map(c => [c.id, c]));
   if (!clis.length) return `<h2>Nuevo pedido</h2><div class="empty"><span class="e">👥</span>${ROLE === 'vendedor' ? 'Aún no tienes clientes asignados. Pídele a la administración que te asigne una ruta o clientes.' : 'Primero crea un cliente en la pestaña Clientes.'}</div>`;
   if (!C.cli || !C.clis[C.cli.id]) C.cli = null;
@@ -614,11 +663,15 @@ V.pedidos = async () => {
   const seg = ['administrador','gerencia'].includes(ROLE);
   sub.ap = sub.ap || (seg ? 'enviado' : 'todos');
   const filtros = { enviado: ['enviado'], proceso: ['aprobado','en_alistamiento','despachado'], todos: null };
-  const peds = await loadPedidos(filtros[sub.ap]);
   if (seg && sub.ap === 'ventas') return vistaVentas();
+  let sinLista = false;
+  const peds = await cached('dpd_peds_' + sub.ap, () => loadPedidos(filtros[sub.ap]))
+    .catch(e => { if (!esRed(e)) throw e; sinLista = true; return []; });
+  C.ped = { ...(C.ped || {}), ...Object.fromEntries(peds.map(p => [p.id, p])) };
+  const pend = colaGet().filter(x => x.tipo === 'pedido');
   const segH = seg ? `<div class="seg">${[['enviado','Por aprobar'],['proceso','En proceso'],['todos','Todos'],['ventas','Contado']].map(([k, n]) => `<button class="${sub.ap === k ? 'on' : ''}" onclick="sub.ap='${k}';refresh()">${n}</button>`).join('')}</div>` : '';
   const title = ROLE === 'cliente' ? 'Mis pedidos' : ROLE === 'conductor' ? 'Entregas' : 'Pedidos';
-  return `<div class="row"><h2>${title}</h2><button class="btn sm sec" onclick="refresh()">↻</button></div>${segH}${peds.map(pedCard).join('') || '<div class="empty"><span class="e">🧺</span>No hay pedidos aquí</div>'}`;
+  return `<div class="row"><h2>${title}</h2><button class="btn sm sec" onclick="refresh()">↻</button></div>${segH}${sinLista ? '<div class="note warnnote">📵 Sin señal: la lista de pedidos se verá cuando vuelva la señal. Puedes seguir tomando pedidos.</div>' : ''}${pend.map(pedPendCard).join('')}${peds.map(pedCard).join('') || (pend.length || sinLista ? '' : '<div class="empty"><span class="e">🧺</span>No hay pedidos aquí</div>')}`;
 };
 V.alistar = async () => {
   const peds = await loadPedidos(['aprobado','en_alistamiento']);
@@ -948,11 +1001,11 @@ const MEDIOS = [['efectivo','💵 Efectivo'],['nequi','📱 Nequi'],['transferen
 const MEDIO_N = Object.fromEntries(MEDIOS.map(([k, v]) => [k, v.replace(/^\S+\s/, '')]));
 const segV = (id, opts, on) => `<div class="seg" id="${id}">${opts.map(([v, n]) => `<button type="button" data-v="${v}" class="${v === on ? 'on' : ''}" onclick="[...this.parentNode.children].forEach(b=>b.classList.remove('on'));this.classList.add('on');${id === 'vmod' ? 'modVenta()' : ''}">${n}</button>`).join('')}</div>`;
 V.contado = async () => {
-  const clis = await cached('dpd_clis', () => q(sb.from('clientes').select('id,razon_social,direccion,cupo,lista_precio_id,tipo_documento,numero_documento').eq('activo', true).order('razon_social')));
+  const clis = await cached('dpd_clis', leerClientes);
   C.clis = Object.fromEntries(clis.map(c => [c.id, c]));
   if (C.vcli && !C.clis[C.vcli]) C.vcli = '';
   await loadCatalog(C.vcli || null);
-  const cola = colaGet(), ajenas = colaAjenas().length, ini = new Date(); ini.setHours(0, 0, 0, 0);
+  const cola = colaGet().filter(x => x.tipo !== 'pedido'), ajenas = colaAjenas().length, ini = new Date(); ini.setHours(0, 0, 0, 0);
   // Ventas de hoy: las registradas en la base (sirven en cualquier celular) + las que esperan señal en este
   const vs = await cached('dpd_ventas_hoy', () => q(sb.from('ventas')
     .select('id,numero,fecha,modalidad,medio_pago,clientes(razon_social,tipo_documento,numero_documento),venta_items(producto_id,cantidad,precio_unitario,descuento_pct)')
@@ -963,7 +1016,7 @@ V.contado = async () => {
   const deHoy = Object.values(map).filter(t => new Date(t.fecha) >= ini).sort((a, b) => new Date(b.fecha) - new Date(a.fecha));
   C.tk = map;
   const tot = deHoy.reduce((a, t) => a + t.total, 0);
-  return `${ajenas ? `<div class="note">📱 En este celular hay ${ajenas} ${ajenas > 1 ? 'ventas' : 'venta'} de otro usuario esperando a que esa persona vuelva a entrar.</div>` : ''}${cola.length ? `<div class="note warnnote">⏫ ${cola.length} ${cola.length > 1 ? 'ventas guardadas' : 'venta guardada'} en este celular sin enviar.${cola.some(x => x.error) ? '<br>⚠️ ' + cola.filter(x => x.error).map(x => esc(x.error)).join('<br>⚠️ ') : ''}<br><button class="btn sm" style="margin-top:8px" onclick="syncCola(true)">Enviar ahora</button></div>` : ''}
+  return `${ajenas ? `<div class="note">📱 En este celular hay ${ajenas} ${ajenas > 1 ? 'pendientes' : 'pendiente'} (ventas o pedidos) de otro usuario esperando a que esa persona vuelva a entrar.</div>` : ''}${cola.length ? `<div class="note warnnote">⏫ ${cola.length} ${cola.length > 1 ? 'ventas guardadas' : 'venta guardada'} en este celular sin enviar.${cola.some(x => x.error) ? '<br>⚠️ ' + cola.filter(x => x.error).map(x => esc(x.error)).join('<br>⚠️ ') : ''}<br><button class="btn sm" style="margin-top:8px" onclick="syncCola(true)">Enviar ahora</button></div>` : ''}
   <h2>Venta de contado</h2>
   <div class="hero"><div style="flex:1"><div class="lbl">Vendido hoy</div><div class="val">${fmt(tot)}</div><div style="font-size:13px;opacity:.8;font-weight:700">${deHoy.length} ${deHoy.length === 1 ? 'venta' : 'ventas'}</div></div><div style="font-size:42px">💵</div></div>
   <div class="card"><label style="margin-top:0">Cliente</label><select onchange="C.vcli=this.value;cart={};refresh()"><option value="">🧍 Consumidor final</option>${clis.map(c => `<option value="${c.id}" ${C.vcli === c.id ? 'selected' : ''}>${esc(c.razon_social)}</option>`).join('')}</select>
