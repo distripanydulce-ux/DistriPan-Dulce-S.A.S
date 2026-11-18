@@ -366,6 +366,7 @@ function enviarPend(it) {
   if (it.tipo === 'cliente_upd') return rpcX('actualizar_cliente', { ...it.args, p_autor: it.dueno });
   if (it.tipo === 'compra') return rpcX('guardar_compra', { ...it.args, p_autor: it.dueno });
   if (it.tipo === 'cargue') return rpcX('cargar_carro', { ...it.args, p_autor: it.dueno });
+  if (it.tipo === 'devolucion') return rpcX('registrar_devolucion', { ...it.args, p_autor: it.dueno });
   if (it.tipo === 'recepcion') return rpcX('registrar_recepcion', { ...it.args, p_autor: it.dueno });
   return rpcVenta({ ...it.args, p_vendedor: it.dueno });
 }
@@ -392,7 +393,7 @@ async function syncCola(manual) {
       const base = c.find(x => x.tipo === 'cliente' && x.error && it.args && it.args.p_cliente === x.id);
       if (base && base !== it) { it.error = 'El cliente nuevo no se pudo crear: ' + base.error; continue; }
       const r = await enviarPend(it);
-      if (r.error) { if (esRed(r.error)) break; it.error = faltaScript(r.error, it.tipo === 'pedido' ? '006' : ['cliente','entrada'].includes(it.tipo) ? '007' : it.tipo === 'cliente_upd' ? '008' : ['compra','recepcion'].includes(it.tipo) ? '010' : it.tipo === 'cargue' ? '011' : '005') || friendly(r.error); continue; }
+      if (r.error) { if (esRed(r.error)) break; it.error = faltaScript(r.error, it.tipo === 'pedido' ? '006' : ['cliente','entrada'].includes(it.tipo) ? '007' : it.tipo === 'cliente_upd' ? '008' : ['compra','recepcion'].includes(it.tipo) ? '010' : it.tipo === 'cargue' ? '011' : it.tipo === 'devolucion' ? '012' : '005') || friendly(r.error); continue; }
       if (it.tipo === 'cliente' && r.data && r.data[0] && r.data[0].cliente_id !== it.id) {
         // Ya existía con ese documento: lo pendiente queda a nombre del cliente existente
         const real = r.data[0].cliente_id; c.forEach(x => { if (x.args && x.args.p_cliente === it.id) x.args.p_cliente = real; if (x.tipo === 'cliente_upd' && x.args.p_id === it.id) x.args.p_id = real; });
@@ -488,7 +489,7 @@ async function loadMe() {
   shell(); await go(TABS[ROLE][0][0]); pintarRed(); syncCola(); precargar();
 }
 function resumenPend(pend) {
-  const N = { venta: ['venta','ventas'], pedido: ['pedido','pedidos'], cliente: ['cliente nuevo','clientes nuevos'], cliente_upd: ['cambio de cliente','cambios de clientes'], compra: ['pedido de compra','pedidos de compra'], recepcion: ['recepción de mercancía','recepciones de mercancía'], cargue: ['cargue de carro','cargues de carros'], estado: ['cambio de pedido','cambios de pedidos'], entrada: ['entrada de mercancía','entradas de mercancía'] };
+  const N = { venta: ['venta','ventas'], pedido: ['pedido','pedidos'], cliente: ['cliente nuevo','clientes nuevos'], cliente_upd: ['cambio de cliente','cambios de clientes'], compra: ['pedido de compra','pedidos de compra'], recepcion: ['recepción de mercancía','recepciones de mercancía'], cargue: ['cargue de carro','cargues de carros'], devolucion: ['devolución de tienda','devoluciones de tiendas'], estado: ['cambio de pedido','cambios de pedidos'], entrada: ['entrada de mercancía','entradas de mercancía'] };
   const k = {}; pend.forEach(x => { const t = x.tipo || 'venta'; k[t] = (k[t] || 0) + 1; });
   const l = Object.entries(k).map(([t, n]) => n + ' ' + N[t][n > 1 ? 1 : 0]);
   return l.length > 1 ? l.slice(0, -1).join(', ') + ' y ' + l.at(-1) : l[0];
@@ -522,7 +523,8 @@ async function precargar() {
     if (ROLE === 'vendedor') await paso('dpd_mios', LD.mios);
     if (['administrador','bodega','gerencia'].includes(ROLE)) await paso('dpd_bodegas', LD.bodegas);
     if (['administrador','bodega','cartera','gerencia'].includes(ROLE)) { await paso('dpd_cargues', LD.cargues); if (ROLE !== 'gerencia') await paso('dpd_personal', LD.personal); }
-    if (['vendedor','conductor'].includes(ROLE)) await paso('dpd_micarga', LD.micarga);
+    if (['vendedor','conductor'].includes(ROLE)) { await paso('dpd_micarga', LD.micarga); await paso('dpd_devs', LD.devs); }
+    if (['administrador','bodega'].includes(ROLE)) { await paso('dpd_devs', LD.devs); await paso('dpd_averias', LD.averias); await paso('dpd_devprov', LD.devprov); }
     if (['administrador','bodega'].includes(ROLE)) { await paso('dpd_alistar', LD.alistar); await paso('dpd_stock', LD.stock); await paso('dpd_movs', LD.movs);
       await paso('dpd_provs', LD.provs); await paso('dpd_compras', LD.compras); await paso('dpd_recs', LD.recs); await paso('dpd_venc', LD.venc); }
     if (ROLE === 'gerencia') { await paso('dpd_compras', LD.compras); await paso('dpd_stock', LD.stock); await paso('dpd_venc', LD.venc); }
@@ -548,6 +550,9 @@ const LD = {
   cargues: () => q(sb.rpc('cargues_recientes', { p_dias: 3 })),
   personal: () => q(sb.rpc('personal_de_ruta')),
   micarga: () => q(sb.rpc('carga_actual')),
+  devs: () => q(sb.rpc('devoluciones_pendientes')),
+  averias: () => q(sb.rpc('stock_averias')),
+  devprov: () => q(sb.from('devoluciones_proveedor').select('id,numero,fecha,estado,valor_reconocido,nota,proveedores(nombre),devoluciones_proveedor_items(producto_id,cantidad)').order('numero', { ascending: false }).limit(20)),
   movs: () => q(sb.from('movimientos_inventario').select('producto_id,cantidad,creado_en,nota').eq('tipo', 'entrada').order('creado_en', { ascending: false }).limit(10)),
 };
 // Clientes guardados + los creados sin señal que aún no se han enviado
@@ -752,6 +757,7 @@ V.inicio = async () => {
   <div style="font-size:13px;opacity:.8;font-weight:700">${meta ? 'Meta ' + fmt(meta) : 'Sin meta asignada'} · descuento máx. ${+a.descuento_max || 0}%</div></div>${ring(pct)}</div>
   ${av ? '' : '<div class="note warnnote">No se pudo calcular el avance de la meta en este momento.</div>'}
   ${await tarjetaCarga()}
+  <button class="btn sec" style="margin-bottom:12px" onclick="formDevolucion()">♻️ Registrar devolución de una tienda</button>
   <div class="tiles"><button class="tile t1" onclick="go('vender')"><span class="em">🛒</span><b>Nuevo pedido</b><span>Escoge el cliente</span></button>
   <button class="tile t4" onclick="go('pedidos')"><span class="em">📋</span><b>Mis pedidos</b><span>${mios.filter(p => p.estado === 'enviado').length} por aprobar</span></button>
   <button class="tile t3" onclick="go('contado')"><span class="em">💵</span><b>Venta de contado</b><span>Tirilla o factura</span></button>
@@ -1037,7 +1043,9 @@ V.contar = async () => {
   if (!['administrador','bodega'].includes(ROLE)) return '<div class="empty"><span class="e">🔒</span>Solo bodega y administración cuentan.</div>';
   const c = (C.cg || {})[C.cgc]; if (!c) return '<div class="empty"><span class="e">🚚</span>Escoge el cargue desde la pantalla de Cargue.<br><br><button class="btn sm sec" onclick="go(\'cargue\')">Ir a Cargue</button></div>';
   // necesita señal: lo esperado depende de lo que el vendedor ya envió
-  const [carga, peds] = await Promise.all([q(sb.rpc('carga_actual', { p_responsable: c.responsable_id })), q(sb.rpc('pedidos_del_cargue', { p_cargue: c.id }))]);
+  const [carga, peds, devs] = await Promise.all([q(sb.rpc('carga_actual', { p_responsable: c.responsable_id })), q(sb.rpc('pedidos_del_cargue', { p_cargue: c.id })),
+    q(sb.rpc('devoluciones_pendientes', { p_persona: c.responsable_id })).catch(() => [])]);
+  C.ctDevs = devs; if (!C.ct || C.ctDe !== c.id) C.ctDevSel = new Set(devs.map(d => d.id));
   C.ctEsp = Object.fromEntries(carga.map(x => [x.producto_id, +x.cantidad]));
   C.ctPeds = peds.filter(p => p.estado === 'despachado');
   if (!C.ct || C.ctDe !== c.id) { C.ctDe = c.id; C.ct = { ...C.ctEsp }; C.ctVuelven = new Set(); }
@@ -1045,6 +1053,8 @@ V.contar = async () => {
   <div class="note warnnote">Antes de contar, pide a <b>${esc(c.responsable)}</b> que abra la app con señal para que se envíen sus ventas y entregas pendientes.</div>
   ${C.ctPeds.length ? `<h3>Pedidos sin marcar como entregados</h3><div class="mut">Marca los que <b>no</b> se entregaron y volvieron. Quedan aprobados para despacharlos otro día.</div>
   <div class="card">${C.ctPeds.map(p => `<label class="li" style="cursor:pointer;margin:0"><input type="checkbox" style="width:22px;height:22px" ${C.ctVuelven.has(p.pedido_id) ? 'checked' : ''} onchange="marcarVuelve('${p.pedido_id}',this.checked)"><div class="pn"><b>Pedido #${p.numero}</b><span>${esc(p.cliente)} · volvió sin entregar</span></div></label>`).join('')}</div>` : ''}
+  ${C.ctDevs.length ? `<h3>♻️ Devoluciones de tiendas que trae</h3><div class="mut">Van a la zona de averías (no se cuentan con lo del carro). Desmarca lo que no llegó.</div>
+  <div class="card">${C.ctDevs.map(d => `<label class="li" style="cursor:pointer;margin:0"><input type="checkbox" style="width:22px;height:22px" ${C.ctDevSel.has(d.id) ? 'checked' : ''} onchange="this.checked?C.ctDevSel.add('${d.id}'):C.ctDevSel.delete('${d.id}')"><div class="pn"><b>${nm(P(d.producto_id))} × ${+d.cantidad}</b><span>${esc(d.cliente)} · ${MOTIVO[d.motivo] || d.motivo}${d.con_cambio ? ' · se le cambió' : ''}</span></div></label>`).join('')}</div>` : ''}
   <h3>Lo que volvió en el carro</h3><div class="mut">Ya viene lleno con lo que debería traer. Corrige lo que no cuadre.</div>
   <div id="ct_l">${conteoHTML()}</div>
   <label>Notas</label><input id="ct_n" placeholder="Opcional">
@@ -1071,6 +1081,7 @@ async function guardarConteo() {
   const c = C.cg[C.cgc], b = $('#ct_b');
   b.disabled = true; b.textContent = 'Guardando…';
   const conteo = Object.entries(C.ct).map(([producto_id, contado]) => ({ producto_id, contado: +contado || 0 }));
+  if (C.ctDevSel && C.ctDevSel.size) { const rd = await rpcX('recibir_devoluciones', { p_ids: [...C.ctDevSel] }); if (rd.error) { toast(esRed(rd.error) ? 'Sin señal: el conteo se guarda con internet' : friendly(rd.error), true); b.disabled = false; b.textContent = '✓ Terminar conteo'; return; } }
   const r = await rpcX('contar_cargue', { p_cargue: c.id, p_conteo: conteo, p_no_entregados: [...C.ctVuelven], p_notas: $('#ct_n').value.trim() || null });
   if (r.error) { toast(esRed(r.error) ? 'Sin señal: el conteo se guarda con internet' : faltaScript(r.error, '011') || friendly(r.error), true); b.disabled = false; b.textContent = '✓ Terminar conteo'; return; }
   const x = r.data || {}; C.ct = null; ['dpd_cargues','dpd_stock','dpd_alistar'].forEach(k => lsDel(uk(k)));
@@ -1105,12 +1116,103 @@ async function tarjetaCarga() {
 }
 V.micarga = async () => {
   const d = await cached('dpd_micarga', LD.micarga).catch(e => { if (!esRed(e)) throw e; return []; });
-  const vend = colaGet().filter(x => !x.tipo || x.tipo === 'venta');
+  const vend = colaGet().filter(x => !x.tipo || x.tipo === 'venta'), camb = colaGet().filter(x => x.tipo === 'devolucion' && x.args.p_cambio);
   const restar = {}; vend.forEach(x => (x.args.p_items || []).forEach(i => { restar[i.producto_id] = (restar[i.producto_id] || 0) + +i.cantidad; }));
+  camb.forEach(x => { restar[x.args.p_producto] = (restar[x.args.p_producto] || 0) + +x.args.p_cantidad; });
+  const devs = [...colaGet().filter(x => x.tipo === 'devolucion').map(x => ({ cliente: x.cliente, producto_id: x.args.p_producto, cantidad: x.args.p_cantidad, motivo: x.args.p_motivo, con_cambio: x.args.p_cambio, _pend: x })),
+    ...await cached('dpd_devs', LD.devs).catch(() => [])];
   return `<div class="row"><h2>📦 Mi carga</h2>${ROLE === 'vendedor' ? `<button class="btn sm sec" onclick="go('inicio')">← Inicio</button>` : `<button class="btn sm sec" onclick="refresh()">↻</button>`}</div>
-  <div class="note">Lo que llevas ahora en el carro${vend.length ? ', descontando las ventas que aún no se envían' : ''}. En la tarde bodega cuenta lo que vuelve.</div>
-  <div class="card">${d.map(x => { const n = +x.cantidad - (restar[x.producto_id] || 0); return `<div class="li">${pArtP(P(x.producto_id))}<div class="pn"><b>${nm(P(x.producto_id))}</b></div><span class="badge ${n > 0 ? 'b-ok' : 'b-bad'}">${n}</span></div>`; }).join('') || '<div class="mut">No tienes carga asignada hoy.</div>'}</div>`;
+  <div class="note">Lo que llevas ahora en el carro${vend.length || camb.length ? ', descontando lo que aún no se envía' : ''}. En la tarde bodega cuenta lo que vuelve.</div>
+  <button class="btn sec" style="margin-bottom:12px" onclick="formDevolucion()">♻️ Registrar devolución de una tienda</button>
+  <div class="card">${d.map(x => { const n = +x.cantidad - (restar[x.producto_id] || 0); return `<div class="li">${pArtP(P(x.producto_id))}<div class="pn"><b>${nm(P(x.producto_id))}</b></div><span class="badge ${n > 0 ? 'b-ok' : 'b-bad'}">${n}</span></div>`; }).join('') || '<div class="mut">No tienes carga asignada hoy.</div>'}</div>
+  ${devs.length ? `<h3>♻️ Devoluciones que llevas para bodega</h3><div class="card">${devs.map(d => `<div class="li">${pArtP(P(d.producto_id))}<div class="pn"><b>${nm(P(d.producto_id))}</b><span>${esc(d.cliente || '')} · ${MOTIVO[d.motivo] || d.motivo}${d.con_cambio ? ' · se cambió' : ''}${d._pend ? (d._pend.error ? ' · ⚠️ ' + esc(d._pend.error) : ' · 📵 por enviar') : ''}</span></div><span class="badge b-pend">${+d.cantidad}</span></div>`).join('')}</div>` : ''}`;
 };
+// ---------- Devoluciones de tiendas y averías (Etapa 3C) ----------
+const MOTIVO = { vencido: 'Vencido', averiado: 'Dañado', error_pedido: 'Error en el pedido', otro: 'Otro' };
+async function formDevolucion(cli) {
+  const clis = await cached('dpd_clis', leerClientes).catch(() => []);
+  C.dvCli = Object.fromEntries(clis.map(c => [c.id, c])); C.dvMot = 'vencido';
+  sheet(`<h2>♻️ Devolución de una tienda</h2><div class="mut">El pan vencido o dañado que te devuelve la tienda. Queda separado para devolverlo a Yemapan.</div>
+  <label>Tienda</label><select id="dv_c">${clis.map(c => `<option value="${c.id}" ${cli === c.id ? 'selected' : ''}>${esc(c.razon_social)}</option>`).join('')}</select>
+  <label>Producto</label><select id="dv_p">${CAT.map(p => `<option value="${p.id}">${nm(p)}</option>`).join('')}</select>
+  <label>Cantidad</label><input id="dv_n" type="number" inputmode="numeric" min="1" value="1" style="font-size:22px;font-weight:900">
+  <label>Motivo</label><div class="seg" id="dv_m">${['vencido','averiado','otro'].map(k => `<button type="button" class="${k === 'vencido' ? 'on' : ''}" onclick="C.dvMot='${k}';[...this.parentNode.children].forEach(b=>b.classList.remove('on'));this.classList.add('on')">${MOTIVO[k]}</button>`).join('')}</div>
+  <label style="display:flex;gap:10px;align-items:center;margin-top:14px"><input type="checkbox" id="dv_x" checked style="width:24px;height:24px"> <span>Le entrego <b>pan nuevo a cambio</b> (mismo producto y cantidad, sale del carro)</span></label>
+  <label>Nota</label><input id="dv_o" placeholder="Opcional">
+  <div style="height:14px"></div><button class="btn" id="dv_b" onclick="guardarDevolucion()">✓ Registrar devolución</button>`);
+}
+async function guardarDevolucion() {
+  const n = +$('#dv_n').value, cid = $('#dv_c').value, b = $('#dv_b');
+  if (!cid) return toast('Escoge la tienda', true);
+  if (!(n > 0)) return toast('Escribe la cantidad', true);
+  const args = { p_id: nuevoId(), p_cliente: cid, p_producto: $('#dv_p').value, p_cantidad: n, p_motivo: C.dvMot, p_cambio: $('#dv_x').checked, p_nota: $('#dv_o').value.trim() || null, p_fecha: new Date().toISOString() };
+  b.disabled = true; b.textContent = 'Guardando…';
+  const r = await rpcX('registrar_devolucion', { ...args, p_autor: ME.id });
+  if (r.error && !esRed(r.error)) { toast(faltaScript(r.error, '012') || friendly(r.error), true); b.disabled = false; b.textContent = '✓ Registrar devolución'; return; }
+  closeSheet();
+  if (r.error) { colaSet([...colaGet(), { id: args.p_id, dueno: ME.id, tipo: 'devolucion', args, cliente: (C.dvCli[cid] || {}).razon_social }]); toast('📵 Sin señal: la devolución quedó guardada y se envía sola'); }
+  else { toast('Devolución registrada' + (args.p_cambio ? ': entrégale ' + n + ' de pan nuevo' : '')); lsDel(uk('dpd_devs')); lsDel(uk('dpd_micarga')); }
+  if (['inicio','micarga','averias','clientes'].includes(tab)) refresh();
+}
+V.averias = async () => {
+  if (!['administrador','bodega','gerencia'].includes(ROLE)) return '<div class="empty"><span class="e">🔒</span>Solo bodega, administración y gerencia.</div>';
+  const puede = ['administrador','bodega'].includes(ROLE);
+  const [devs, stock, dps, provs] = await Promise.all([cached('dpd_devs', LD.devs), cached('dpd_averias', LD.averias), cached('dpd_devprov', LD.devprov), cached('dpd_provs', LD.provs).catch(() => [])]);
+  C.avDevSel = C.avDevSel || new Set(); C.avStock = stock; C.avProvs = provs; C.dps = Object.fromEntries(dps.map(d => [d.id, d]));
+  const tot = stock.reduce((a, x) => a + +x.cantidad, 0);
+  return `<div class="row"><h2>♻️ Averías</h2><button class="btn sm sec" onclick="go('inventario')">← Inventario</button></div>
+  <div class="note">El pan vencido o dañado que devuelven las tiendas. Se separa del inventario (no se puede vender) y se le devuelve a Yemapan.</div>
+  <h3>1. Devoluciones por recibir en bodega</h3>
+  ${devs.length ? `<div class="card">${devs.map(d => `<label class="li" style="cursor:pointer;margin:0">${puede ? `<input type="checkbox" style="width:22px;height:22px" ${C.avDevSel.has(d.id) ? 'checked' : ''} onchange="this.checked?C.avDevSel.add('${d.id}'):C.avDevSel.delete('${d.id}')">` : ''}<div class="pn"><b>${nm(P(d.producto_id))} × ${+d.cantidad}</b><span>${esc(d.cliente)} · ${MOTIVO[d.motivo] || d.motivo} · ${esc(d.quien)} · ${fdate(d.fecha)}</span></div></label>`).join('')}</div>
+  ${puede ? '<button class="btn sm" onclick="recibirDevs()">✓ Recibir las marcadas</button>' : ''}` : '<div class="mut">No hay devoluciones pendientes. (Las que trae cada vendedor también se reciben al contar su cargue.)</div>'}
+  <h3>2. En la zona de averías (${tot} unidades)</h3>
+  ${stock.length ? `<div class="card">${stock.map(x => `<div class="li">${pArtP(P(x.producto_id))}<div class="pn"><b>${nm(P(x.producto_id))}</b></div><span class="badge b-bad">${+x.cantidad}</span></div>`).join('')}</div>
+  ${puede ? '<button class="btn" onclick="formDevProv()">🚛 Devolver a Yemapan</button>' : ''}` : '<div class="mut">La zona de averías está vacía.</div>'}
+  <h3>3. Devoluciones al proveedor</h3>
+  ${dps.map(d => `<div class="card"><div class="row"><b>D-${d.numero} · ${esc(d.proveedores?.nombre || '')}</b><span class="badge ${d.estado === 'reconocida' ? 'b-ok' : 'b-pend'}">${d.estado === 'reconocida' ? 'Reconocida' : 'Entregada, por reconocer'}</span></div>
+    <div class="mut">${fdate(d.fecha)} · ${d.devoluciones_proveedor_items.reduce((a, x) => a + +x.cantidad, 0)} unidades${d.valor_reconocido ? ' · reconocido ' + fmt(d.valor_reconocido) : ''}${d.nota ? ' · ' + esc(d.nota) : ''}</div>
+    <div class="acts"><a class="btn sm sec" style="text-decoration:none" href="https://wa.me/?text=${encodeURIComponent(textoDevProv(d))}" target="_blank" rel="noopener">📲 WhatsApp</a>${ROLE === 'administrador' && d.estado === 'entregada' ? `<button class="btn sm okb" onclick="formReconocida('${d.id}')">✓ Yemapan la reconoció</button>` : ''}</div></div>`).join('') || '<div class="mut">Aún no se ha devuelto nada al proveedor.</div>'}`;
+};
+function textoDevProv(d) {
+  const e = EMP();
+  return `Devolución por averías D-${d.numero} · ${e.razon_social || BRAND}${e.nit ? ' NIT ' + e.nit : ''}\nProveedor: ${(d.proveedores && d.proveedores.nombre) || ''}\nFecha: ${new Date(d.fecha).toLocaleDateString('es-CO')}\n\n` +
+    d.devoluciones_proveedor_items.map(i => { const p = P(i.producto_id); return `${+i.cantidad} x ${p.codigo ? p.codigo + ' ' : ''}${nice(p.nombre || '')}`; }).join('\n') + (d.nota ? '\n\n' + d.nota : '');
+}
+async function recibirDevs() {
+  if (!C.avDevSel.size) return toast('Marca las devoluciones que llegaron', true);
+  const r = await rpcX('recibir_devoluciones', { p_ids: [...C.avDevSel] });
+  if (r.error) return toast(esRed(r.error) ? 'Sin señal: esto se guarda con internet' : faltaScript(r.error, '012') || friendly(r.error), true);
+  C.avDevSel = new Set(); ['dpd_devs','dpd_averias'].forEach(k => lsDel(uk(k))); toast(r.data + ' devoluciones recibidas en averías'); refresh();
+}
+function formDevProv() {
+  C.dpCant = Object.fromEntries(C.avStock.map(x => [x.producto_id, +x.cantidad]));
+  sheet(`<h2>🚛 Devolver al proveedor</h2><div class="mut">Lo que se lleva o recoge el proveedor. Sale de la zona de averías.</div>
+  <label>Proveedor</label><select id="dp_p">${C.avProvs.filter(p => p.activo).map(p => `<option value="${p.id}">${esc(p.nombre)}</option>`).join('')}</select>
+  <div class="card" style="margin-top:12px">${C.avStock.map(x => `<div class="li"><div class="pn"><b>${nm(P(x.producto_id))}</b><span>Hay ${+x.cantidad}</span></div><input type="number" inputmode="numeric" min="0" max="${+x.cantidad}" style="width:84px;text-align:center" value="${+x.cantidad}" onchange="C.dpCant['${x.producto_id}']=+this.value||0"></div>`).join('')}</div>
+  <label>Nota</label><input id="dp_n" placeholder="Ej: lo recogió el camión de Yemapan">
+  <div style="height:14px"></div><button class="btn" id="dp_b" onclick="guardarDevProv()">✓ Registrar devolución</button>`);
+}
+async function guardarDevProv() {
+  const items = Object.entries(C.dpCant).filter(([, n]) => n > 0).map(([producto_id, cantidad]) => ({ producto_id, cantidad }));
+  if (!items.length) return toast('Escribe qué se devuelve', true);
+  const b = $('#dp_b'); b.disabled = true;
+  const r = await rpcX('devolver_a_proveedor', { p_id: nuevoId(), p_proveedor: $('#dp_p').value, p_items: items, p_nota: $('#dp_n').value.trim() || null });
+  if (r.error) { b.disabled = false; return toast(esRed(r.error) ? 'Sin señal: esto se guarda con internet' : faltaScript(r.error, '012') || friendly(r.error), true); }
+  closeSheet(); ['dpd_averias','dpd_devprov'].forEach(k => lsDel(uk(k))); toast('Devolución D-' + r.data + ' registrada'); refresh();
+}
+function formReconocida(id) {
+  const d = C.dps[id];
+  sheet(`<h2>✓ D-${d.numero} reconocida</h2><div class="mut">Cuando Yemapan da la nota crédito, el descuento o repone el pan.</div>
+  <label>Valor reconocido ($)</label><input id="rc_v" type="number" inputmode="numeric" placeholder="Opcional">
+  <label>Nota</label><input id="rc_n" placeholder="Ej: nota crédito 88">
+  <div style="height:14px"></div><button class="btn" onclick="guardarReconocida('${id}')">Guardar</button>`);
+}
+async function guardarReconocida(id) {
+  const v = $('#rc_v').value;
+  const r = await rpcX('marcar_devolucion_reconocida', { p_id: id, p_valor: v ? +v : null, p_nota: $('#rc_n').value.trim() || null });
+  if (r.error) return toast(esRed(r.error) ? 'Sin señal: esto se guarda con internet' : friendly(r.error), true);
+  closeSheet(); lsDel(uk('dpd_devprov')); toast('Marcada como reconocida'); refresh();
+}
 // Kardex de un producto
 async function verKardex(pid) {
   const p = P(pid);
@@ -1142,7 +1244,7 @@ V.inventario = async () => {
   const venc = await cached('dpd_venc', LD.venc).catch(() => null);
   const l = CAT.filter(p => sub.inv === 'todo' || (by[p.id] || 0) < 10); const mx = Math.max(1, ...Object.values(by));
   const kx = ['administrador','gerencia','bodega'].includes(ROLE);
-  return `<h2>Inventario</h2>${totCarros > 0 ? `<div class="note">🚚 Además hay ${totCarros} unidades en los carros (ver Cargue).</div>` : ''}<div class="seg"><button class="${sub.inv === 'bajo' ? 'on' : ''}" onclick="sub.inv='bajo';refresh()">⚠️ Por agotarse (${CAT.filter(p => (by[p.id] || 0) < 10).length})</button><button class="${sub.inv === 'todo' ? 'on' : ''}" onclick="sub.inv='todo';refresh()">📦 Todo</button>${venc ? `<button class="${sub.inv === 'venc' ? 'on' : ''}" onclick="sub.inv='venc';refresh()">⏰ Por vencer (${venc.length})</button>` : ''}</div>
+  return `<div class="row"><h2>Inventario</h2>${['administrador','bodega','gerencia'].includes(ROLE) ? '<button class="btn sm sec" onclick="go(\'averias\')">♻️ Averías</button>' : ''}</div>${totCarros > 0 ? `<div class="note">🚚 Además hay ${totCarros} unidades en los carros (ver Cargue).</div>` : ''}<div class="seg"><button class="${sub.inv === 'bajo' ? 'on' : ''}" onclick="sub.inv='bajo';refresh()">⚠️ Por agotarse (${CAT.filter(p => (by[p.id] || 0) < 10).length})</button><button class="${sub.inv === 'todo' ? 'on' : ''}" onclick="sub.inv='todo';refresh()">📦 Todo</button>${venc ? `<button class="${sub.inv === 'venc' ? 'on' : ''}" onclick="sub.inv='venc';refresh()">⏰ Por vencer (${venc.length})</button>` : ''}</div>
   ${kx ? '<div class="mut" style="margin:6px 0">Toca un producto para ver su kardex.</div>' : ''}
   ${sub.inv === 'venc' ? `<div class="note">Vencen en los próximos 7 días. Se calcula suponiendo que sale primero lo que vence primero.</div><div class="card">${(venc || []).map(v => `<div class="li" style="cursor:pointer" onclick="verKardex('${v.producto_id}')">${pArtP(P(v.producto_id))}<div class="pn"><b>${nm(P(v.producto_id))}</b><span>Lote ${esc(v.codigo_lote)} · ${v.dias < 0 ? '<b style="color:var(--bad)">vencido hace ' + (-v.dias) + ' días</b>' : v.dias === 0 ? '<b style="color:var(--bad)">vence hoy</b>' : 'vence en ' + v.dias + (v.dias === 1 ? ' día' : ' días')}</span></div><span class="badge ${v.dias <= 2 ? 'b-bad' : 'b-pend'}">${+v.cantidad}</span></div>`).join('') || '<div class="mut">Nada por vencer en los próximos 7 días 🎉</div>'}</div>` : `
   <div class="card">${l.map(p => { const s = by[p.id] || 0; return `<div class="li" ${kx ? `style="cursor:pointer" onclick="verKardex('${p.id}')"` : ''}>${pArtP(p)}<div class="pn"><b>${nm(p)}</b><div class="bar"><i style="width:${Math.max(3, s / mx * 100)}%;${s < 10 ? 'background:linear-gradient(90deg,#E0603F,#B3321E)' : ''}"></i></div></div><span class="badge ${s < 10 ? 'b-bad' : 'b-ok'}">${s}</span></div>`; }).join('')}</div>`}`;
@@ -1190,7 +1292,7 @@ V.resumen = async () => {
   <div class="kpi" style="background:linear-gradient(135deg,#D58A12,#F2BB45)"><div class="k">Clientes</div><div class="v">${nCli ?? 0}</div><span class="ke">👥</span></div>
   <div class="kpi" style="background:linear-gradient(135deg,#B3321E,#E0603F)"><div class="k">Productos activos</div><div class="v">${CAT.length}</div><span class="ke">🥖</span></div></div>
   <h3>Ventas por línea (pedidos)</h3><div class="card chart">${ent.map(([l, v], i) => `<div class="cb"><span class="lab">${esc(l)}</span><div class="tr"><i style="width:${v / mx * 100}%;background:${COL[i % COL.length]}"></i></div><span class="vv">${fmt(v)}</span></div>`).join('') || '<div class="mut">Aún no hay pedidos.</div>'}</div>
-  <div class="grid2" style="margin-top:14px">${[['cargue','🚚','Cargue y liquidación'],['compras','🧾','Compras'],['recibir','🚛','Recibir'],['inventario','📊','Inventario'],['alistar','📦','Alistar']].filter(x => ROLE === 'administrador' || ['cargue','compras','inventario'].includes(x[0])).map(([k, i, n]) => `<button class="btn sec" onclick="go('${k}')">${i} ${n}</button>`).join('')}</div>
+  <div class="grid2" style="margin-top:14px">${[['cargue','🚚','Cargue y liquidación'],['averias','♻️','Averías'],['compras','🧾','Compras'],['recibir','🚛','Recibir'],['inventario','📊','Inventario'],['alistar','📦','Alistar']].filter(x => ROLE === 'administrador' || ['cargue','averias','compras','inventario'].includes(x[0])).map(([k, i, n]) => `<button class="btn sec" onclick="go('${k}')">${i} ${n}</button>`).join('')}</div>
   ${ROLE === 'administrador' ? `<button class="card" style="width:100%;border:0;text-align:left;cursor:pointer;font:inherit;margin-top:14px" onclick="go('empresa')"><div class="row"><div><b>🏢 Datos de la empresa</b><div class="mut">${EMP().nit ? 'NIT ' + esc(EMP().nit) + ' · ' : ''}Nombre, NIT, dirección y teléfono de la tirilla</div></div><span style="font-size:22px">›</span></div></button>` : ''}
   <div class="note">Cartera, facturación con Siigo y rutas llegan en las siguientes fases.</div>`;
 };
@@ -1360,6 +1462,7 @@ function verCliente(id) {
   sheet(`<h2>${esc(c.razon_social)}</h2>${c.nombre_comercial ? `<div class="mut">${esc(c.nombre_comercial)}</div>` : ''}
   <div class="card" style="margin-top:10px">${F('Documento', `${c.tipo_documento} ${c.numero_documento}${c.digito_verificacion ? '-' + c.digito_verificacion : ''}`)}${F('Teléfono', c.telefono)}${F('Correo de facturación', c.email_facturacion)}${F('Dirección', c.direccion)}${F('Municipio', c.municipio)}
   ${F('Ruta', c.rutas?.nombre || '')}${F('Lista de precios', c.listas_precio?.nombre || '')}${F('Cupo y plazo', fmt(c.cupo) + ' · ' + (c.plazo_dias ? c.plazo_dias + ' días' : 'contado'))}</div>
+  ${['vendedor','conductor','administrador','bodega'].includes(ROLE) && c.activo !== false ? `<button class="btn sec" style="margin-bottom:10px" onclick="formDevolucion('${id}')">♻️ Registrar devolución</button>` : ''}
   ${c.activo === false ? '<div class="note warnnote">🚫 Cliente inactivo: no aparece para vender. Su historia se conserva.</div>' : ''}
   ${['administrador','gerencia'].includes(ROLE) ? `<button class="btn sec" style="margin-bottom:10px" onclick="activarCliente('${id}',${c.activo === false})">${c.activo === false ? '✅ Volver a activar' : '🚫 Desactivar cliente'}</button>` : ''}
   ${puedeModificar(c) ? `<div class="grid2"><button class="btn sec" onclick="closeSheet()">Cerrar</button><button class="btn" onclick="editarCliente('${id}')">✏️ Modificar</button></div>`
