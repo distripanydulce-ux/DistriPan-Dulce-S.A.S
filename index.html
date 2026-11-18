@@ -186,6 +186,13 @@ nav.tabs .dot{position:absolute;top:0;right:calc(50% - 22px);background:var(--ba
 .search.fijo{position:sticky;top:8px;z-index:30}
 .search.fijo input{box-shadow:0 6px 18px rgba(46,28,18,.16)}
 
+/* Etapa 4: cuenta de cobro en hoja carta */
+#printarea.carta{background:#fff;color:#000;padding:14px;border-radius:12px;font-size:14px}
+#printarea.carta .tabla{width:100%;border-collapse:collapse;font-size:13px}
+#printarea.carta .tabla th,#printarea.carta .tabla td{border-bottom:1px solid #ccc;padding:5px 4px;text-align:left}
+@page carta{size:letter;margin:12mm}
+@media print{#printarea.carta{page:carta;width:auto;right:0;font-size:12px}}
+
 /* Marca DistriPan & Dulce: café #2E1C12, dorado #F2B544/#E0A030, rosado #F48FA8/#D9486A */
 :root{--terra:#D9486A;--terra2:#A8324F;--crust:#E0A030;--honey:#F2B544}
 header{background:linear-gradient(140deg,#2E1C12 0%,#3F2719 55%,#5A3820 100%)}
@@ -418,7 +425,7 @@ const TABS = {
   vendedor:      [['inicio','🏠','Inicio'],['contado','💵','Contado'],['vender','🛒','Pedido'],['pedidos','📋','Pedidos'],['clientes','👥','Clientes']],
   cliente:       [['vitrina','🥐','Vitrina'],['pedidos','🚚','Mis pedidos']],
   bodega:        [['alistar','📦','Alistar'],['cargue','🚚','Cargue'],['compras','🧾','Compras'],['recibir','🚛','Recibir'],['inventario','📊','Inventario']],
-  cartera:       [['pedidos','📋','Pedidos'],['clientes','👥','Clientes'],['cargue','💵','Liquidar'],['proximo','💰','Cartera']],
+  cartera:       [['cartera','💰','Cartera'],['pedidos','📋','Pedidos'],['clientes','👥','Clientes'],['cargue','💵','Liquidar']],
   conductor:     [['pedidos','🚚','Entregas'],['micarga','📦','Mi carga'],['proximo','🗺️','Rutas']]
 };
 
@@ -524,6 +531,9 @@ async function precargar() {
     if (['administrador','bodega','gerencia'].includes(ROLE)) await paso('dpd_bodegas', LD.bodegas);
     if (['administrador','bodega','cartera','gerencia'].includes(ROLE)) { await paso('dpd_cargues', LD.cargues); if (ROLE !== 'gerencia') await paso('dpd_personal', LD.personal); }
     if (['vendedor','conductor'].includes(ROLE)) { await paso('dpd_micarga', LD.micarga); await paso('dpd_devs', LD.devs); }
+    if (['vendedor','administrador','gerencia','cartera','cliente'].includes(ROLE)) await paso('dpd_sucs', LD.sucs);
+    if (['vendedor','administrador','gerencia','cartera'].includes(ROLE)) await paso('dpd_cartera', LD.cartera);
+    if (['administrador','gerencia','cartera'].includes(ROLE)) { await paso('dpd_porfact', LD.porFacturar); await paso('dpd_cuentas', LD.cuentas); }
     if (['administrador','bodega'].includes(ROLE)) { await paso('dpd_devs', LD.devs); await paso('dpd_averias', LD.averias); await paso('dpd_devprov', LD.devprov); }
     if (['administrador','bodega'].includes(ROLE)) { await paso('dpd_alistar', LD.alistar); await paso('dpd_stock', LD.stock); await paso('dpd_movs', LD.movs);
       await paso('dpd_provs', LD.provs); await paso('dpd_compras', LD.compras); await paso('dpd_recs', LD.recs); await paso('dpd_venc', LD.venc); }
@@ -551,6 +561,10 @@ const LD = {
   personal: () => q(sb.rpc('personal_de_ruta')),
   micarga: () => q(sb.rpc('carga_actual')),
   devs: () => q(sb.rpc('devoluciones_pendientes')),
+  sucs: () => q(sb.from('sucursales_cliente').select('id,cliente_id,nombre,direccion,telefono').order('nombre')),
+  cartera: () => q(sb.rpc('cartera_clientes')),
+  porFacturar: () => q(sb.rpc('entregas_por_facturar')),
+  cuentas: () => q(sb.from('cuentas_cobro').select('id,numero,fecha,total,plazo_dias,enviada_en,vence_en,factura_electronica,estado,nota,cliente_id,clientes(razon_social,numero_documento,digito_verificacion,tipo_documento,direccion,municipio,email_facturacion),aplicaciones_cuenta(valor),cuenta_cobro_pedidos(pedido_id)').neq('estado', 'anulada').order('numero', { ascending: false }).limit(150)),
   averias: () => q(sb.rpc('stock_averias')),
   devprov: () => q(sb.from('devoluciones_proveedor').select('id,numero,fecha,estado,valor_reconocido,nota,proveedores(nombre),devoluciones_proveedor_items(producto_id,cantidad)').order('numero', { ascending: false }).limit(20)),
   movs: () => q(sb.from('movimientos_inventario').select('producto_id,cantidad,creado_en,nota').eq('tipo', 'entrada').order('creado_en', { ascending: false }).limit(10)),
@@ -641,16 +655,21 @@ function review() {
   <div class="card">${it.map(i => `<div class="li">${pArtP(i.p)}<div class="pn"><b>${nm(i.p)}</b><span>${i.n} × ${fmt(i.p.precio)}</span></div><b>${fmt(i.n * i.p.precio)}</b></div>`).join('')}
   <div class="row" style="margin-top:10px;padding-top:10px;border-top:2px solid var(--line)"><b>Total</b><span class="big" style="color:var(--terra2)">${fmt(cartTotal())}</span></div></div>
   ${ROLE === 'vendedor' || ROLE === 'administrador' ? `<label>Descuento (%)${ROLE === 'vendedor' ? ' · el tope lo valida el sistema' : ''}</label><input id="dsc" type="number" inputmode="decimal" min="0" max="100" value="0">` : ''}
+  ${sucsDe(cli ? cli.id : ME.cliente_id).length ? `<label>Almacén donde se entrega</label><select id="suc"><option value="">— Escoge el almacén —</option>${sucsDe(cli ? cli.id : ME.cliente_id).map(x => `<option value="${x.id}">${esc(x.nombre)}</option>`).join('')}</select>` : ''}
+  ${cli ? avisoCartera(cli.id, cartTotal()) : ''}
   <label>Fecha de entrega</label><input id="fen" type="date">
   <label>Observaciones</label><input id="obs" placeholder="Opcional">
   <div style="height:14px"></div><button class="btn" id="sendb" onclick="sendOrder()">📤 Enviar pedido</button>`);
 }
 function nuevoId() { return crypto.randomUUID ? crypto.randomUUID() : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => { const r = Math.random() * 16 | 0; return (c === 'x' ? r : (r & 3 | 8)).toString(16); }); }
+const sucsDe = cid => (lsGet(uk('dpd_sucs')) || []).filter(x => x.cliente_id === cid);
 async function sendOrder() {
+  if ($('#suc') && !$('#suc').value) return toast('Escoge el almacén donde se entrega', true);
   const b = $('#sendb'); b.disabled = true; b.textContent = 'Enviando…';
   const cli = ROLE === 'cliente' ? null : C.cli, dsc = +($('#dsc')?.value || 0), id = nuevoId();
   const args = { p_id: id, p_cliente: ROLE === 'cliente' ? ME.cliente_id : cli.id, p_items: cartItems().map(i => ({ producto_id: i.id, cantidad: i.n })),
     p_descuento: dsc, p_fecha_entrega: $('#fen').value || null, p_obs: $('#obs').value || null, p_fecha: new Date().toISOString(), p_autor: ME.id };
+  if ($('#suc')) args.p_sucursal = $('#suc').value;
   const r = esPend(args.p_cliente) ? { error: { message: 'Failed to fetch' } } : await rpcPedido(args);
   if (r.error && !esRed(r.error)) {
     toast(/registrar_pedido|schema cache/i.test(r.error.message || '') ? 'Falta correr el script 006 en Supabase' : friendly(r.error), true);
@@ -676,7 +695,7 @@ const track = e => { const k = STEPS.indexOf(e === 'entregado_parcial' ? 'entreg
   <div class="tlab"><span>Enviado</span><span>Aprobado</span><span>Alistando</span><span>En camino</span><span>Entregado</span></div>`; };
 const pedTotal = p => p.pedido_items.reduce((a, i) => a + i.cantidad * i.precio_unitario, 0);
 async function loadPedidos(estados) {
-  let r = sb.from('pedidos').select('id,numero,estado,fecha,fecha_entrega,origen,observaciones,cliente_id,vendedor_id,clientes(razon_social,direccion,cupo),pedido_items(producto_id,cantidad,precio_unitario,descuento_pct)').order('numero', { ascending: false }).limit(60);
+  let r = sb.from('pedidos').select('id,numero,estado,fecha,fecha_entrega,origen,observaciones,cliente_id,vendedor_id,clientes(razon_social,direccion,cupo),sucursales_cliente(nombre),pedido_items(producto_id,cantidad,precio_unitario,descuento_pct)').order('numero', { ascending: false }).limit(60);
   if (estados) r = r.in('estado', estados);
   const d = await q(r); C.ped = Object.fromEntries(d.map(p => [p.id, p])); return d;
 }
@@ -692,7 +711,7 @@ function pedCard(p, i = 0) {
   if (p.estado === 'despachado' && (ROLE === 'administrador' || ROLE === 'conductor' || (ROLE === 'vendedor' && p.vendedor_id === ME.id))) { A('entregado_parcial', 'Parcial', 'sec'); A('entregado', '✓ Entregado', 'okb'); }
   if (p.estado === 'enviado' && ((ROLE === 'cliente' && p.origen === 'cliente') || (ROLE === 'vendedor' && p.vendedor_id === ME.id))) A('cancelado', 'Cancelar', 'sec');
   const over = ['administrador','gerencia'].includes(ROLE) && p.estado === 'enviado' && p.clientes && +p.clientes.cupo > 0 && pedTotal(p) > +p.clientes.cupo;
-  return `<div class="card" ${dl(i)}><div class="row"><b class="serif" style="font-size:18px">Pedido #${p.numero}</b>${badge(p.estado)}</div>
+  return `<div class="card" ${dl(i)}><div class="row"><b class="serif" style="font-size:18px">Pedido #${p.numero}</b>${badge(p.estado)}</div>${p.sucursales_cliente ? `<div class="mut">🏬 ${esc(p.sucursales_cliente.nombre)}</div>` : ''}
   ${pe ? `<div class="note ${pe.error ? 'warnnote' : ''}" style="margin-top:6px">${pe.error ? '⚠️ No se pudo pasar a ' + EST[pe.args.p_estado][0].toLowerCase() + ': ' + esc(pe.error) + `<br><button class="btn sm sec" style="margin-top:6px" onclick="quitarPend('${pe.id}')">Quitar este cambio</button>` : '⏫ Cambio guardado sin señal: se envía solo'}</div>` : ''}
   <div class="mut" style="margin-top:2px">${esc(p.clientes?.razon_social || '')} · ${fdate(p.fecha)}${p.fecha_entrega ? ' · entrega ' + fdate(p.fecha_entrega + 'T12:00') : ''}</div>
   ${thumbs(p)}${track(p.estado)}
@@ -718,7 +737,19 @@ function verPed(id) {
   ${p.observaciones ? `<div class="note">${esc(p.observaciones)}</div>` : ''}
   <div class="card" style="margin-top:12px">${p.pedido_items.map(i => { const pr = P(i.producto_id); return `<div class="li">${pArtP(pr)}<div class="pn"><b>${nm(pr)}</b><span>${+i.cantidad} × ${fmt(i.precio_unitario)}${+i.descuento_pct ? ' · desc. ' + (+i.descuento_pct) + '%' : ''}</span></div><b>${fmt(i.cantidad * i.precio_unitario)}</b></div>`; }).join('')}
   <div class="row" style="margin-top:10px"><b>Total</b><span class="big">${fmt(pedTotal(p))}</span></div></div>
-  <div class="note warnnote">🧾 La factura electrónica con Siigo se activa en la Fase 7.</div><button class="btn sec" onclick="closeSheet()">Cerrar</button>`);
+  ${p.sucursales_cliente ? `<div class="note">🏬 Se entrega en <b>${esc(p.sucursales_cliente.nombre)}</b></div>` : ''}
+  <div class="grid2"><button class="btn" onclick="verGuia('${p.id}')">🧾 Guía de entrega</button><button class="btn sec" onclick="closeSheet()">Cerrar</button></div>`);
+}
+// Guía o remisión de entrega (va con el pedido al almacén); se imprime en la impresora de tirilla
+function verGuia(id) {
+  const p = C.ped[id], e = EMP(), tot = pedTotal(p);
+  const html = `<div id="printarea" class="tirilla"><img src="${LOGO_CLARO}" alt="${BRAND}"><div class="c">${e.razon_social && e.razon_social !== BRAND ? `<b>${esc(e.razon_social)}</b><br>` : ''}${e.nit ? 'NIT ' + esc(e.nit) + (e.digito_verificacion ? '-' + esc(e.digito_verificacion) : '') + '<br>' : ''}${esc(e.municipio || 'Yopal')}${e.telefono ? ' · Tel. ' + esc(e.telefono) : ''}</div><hr>
+  <div class="c"><b>GUÍA DE ENTREGA · PEDIDO #${p.numero}</b><br>${new Date().toLocaleString('es-CO')}</div><hr>
+  <div>Cliente: <b>${esc(p.clientes?.razon_social || '')}</b>${p.sucursales_cliente ? '<br>Almacén: <b>' + esc(p.sucursales_cliente.nombre) + '</b>' : ''}</div><hr>
+  ${p.pedido_items.map(i => `<div>${+i.cantidad} x ${esc(nice(P(i.producto_id).nombre || ''))}</div><div class="tr">${fmt(i.cantidad * i.precio_unitario)}</div>`).join('')}<hr>
+  <div class="tl"><b>TOTAL</b><b>${fmt(tot)}</b></div><hr>
+  <div class="c">Se factura en la cuenta del cliente.<br>No es factura electrónica.<br><br><br>_______________________<br>Recibido (nombre y firma)</div></div>`;
+  sheet(`${html}<div class="grid2" style="margin-top:14px"><button class="btn" onclick="imprimir()">🖨️ Imprimir</button><button class="btn sec" onclick="verPed('${id}')">← Volver</button></div>`);
 }
 const pArtP = pr => `<div class="th" style="background:${bgc2(pr)}">${art2(pr)}</div>`;
 async function estado(id, est) {
@@ -773,8 +804,19 @@ V.vender = async () => {
   const sel = `<label style="margin-top:0">Cliente</label><select onchange="pickCli(this.value)"><option value="">— Escoge el cliente —</option>${clis.map(c => `<option value="${c.id}" ${C.cli && C.cli.id === c.id ? 'selected' : ''}>${esc(c.razon_social)}</option>`).join('')}</select>`;
   if (!C.cli) return `<h2>Nuevo pedido</h2><div class="card">${sel}</div>`;
   await loadCatalog(C.cli.id);
-  return `<h2>Nuevo pedido</h2><div class="card">${sel}</div><div id="catwrap">${catalogHTML()}</div>`;
+  return `<h2>Nuevo pedido</h2><div class="card">${sel}</div>${avisoCartera(C.cli.id)}<div id="catwrap">${catalogHTML()}</div>`;
 };
+// Factura contra factura y cupo: la app solo avisa, no bloquea
+function avisoCartera(cid, extra = 0) {
+  const k = (lsGet(uk('dpd_cartera')) || []).find(x => x.cliente_id === cid); if (!k) return '';
+  const l = [];
+  if (+k.vencido > 0) l.push(`🔴 Tiene <b>${fmt(k.vencido)}</b> vencido${k.dias_mas_vencido ? ' hace ' + k.dias_mas_vencido + ' días' : ''}.`);
+  else if (+k.saldo > 0 && k.forma_pago === 'factura_contra_factura') l.push(`🟡 Factura contra factura: tiene <b>${fmt(k.saldo)}</b> sin pagar. Confirma el pago antes de dejarle la nueva factura.`);
+  else if (+k.saldo > 0) l.push(`Tiene <b>${fmt(k.saldo)}</b> por pagar (aún no vence).`);
+  const usado = +k.saldo + +k.por_facturar + extra;
+  if (+k.cupo > 0 && usado > +k.cupo) l.push(`⚠️ Con lo que debe y lo entregado sin facturar llega a ${fmt(usado)}: se pasa del cupo de ${fmt(k.cupo)}.`);
+  return l.length ? `<div class="note ${+k.vencido > 0 ? 'warnnote' : ''}">${l.join('<br>')}</div>` : '';
+}
 function pickCli(id) { cart = {}; C.cli = id ? C.clis[id] : null; refresh(); }
 V.vitrina = async () => {
   await loadCatalog(null);
@@ -1294,7 +1336,7 @@ V.resumen = async () => {
   <div class="kpi" style="background:linear-gradient(135deg,#D58A12,#F2BB45)"><div class="k">Clientes</div><div class="v">${nCli ?? 0}</div><span class="ke">👥</span></div>
   <div class="kpi" style="background:linear-gradient(135deg,#B3321E,#E0603F)"><div class="k">Productos activos</div><div class="v">${CAT.length}</div><span class="ke">🥖</span></div></div>
   <h3>Ventas por línea (pedidos)</h3><div class="card chart">${ent.map(([l, v], i) => `<div class="cb"><span class="lab">${esc(l)}</span><div class="tr"><i style="width:${v / mx * 100}%;background:${COL[i % COL.length]}"></i></div><span class="vv">${fmt(v)}</span></div>`).join('') || '<div class="mut">Aún no hay pedidos.</div>'}</div>
-  <div class="grid2" style="margin-top:14px">${[['cargue','🚚','Cargue y liquidación'],['averias','♻️','Averías'],['compras','🧾','Compras'],['recibir','🚛','Recibir'],['inventario','📊','Inventario'],['alistar','📦','Alistar']].filter(x => ROLE === 'administrador' || ['cargue','averias','compras','inventario'].includes(x[0])).map(([k, i, n]) => `<button class="btn sec" onclick="go('${k}')">${i} ${n}</button>`).join('')}</div>
+  <div class="grid2" style="margin-top:14px">${[['cartera','💰','Cartera'],['cargue','🚚','Cargue y liquidación'],['averias','♻️','Averías'],['compras','🧾','Compras'],['recibir','🚛','Recibir'],['inventario','📊','Inventario'],['alistar','📦','Alistar']].filter(x => ROLE === 'administrador' || ['cartera','cargue','averias','compras','inventario'].includes(x[0])).map(([k, i, n]) => `<button class="btn sec" onclick="go('${k}')">${i} ${n}</button>`).join('')}</div>
   ${ROLE === 'administrador' ? `<button class="card" style="width:100%;border:0;text-align:left;cursor:pointer;font:inherit;margin-top:14px" onclick="go('empresa')"><div class="row"><div><b>🏢 Datos de la empresa</b><div class="mut">${EMP().nit ? 'NIT ' + esc(EMP().nit) + ' · ' : ''}Nombre, NIT, dirección y teléfono de la tirilla</div></div><span style="font-size:22px">›</span></div></button>` : ''}
   <div class="note">Cartera, facturación con Siigo y rutas llegan en las siguientes fases.</div>`;
 };
@@ -1464,6 +1506,8 @@ function verCliente(id) {
   sheet(`<h2>${esc(c.razon_social)}</h2>${c.nombre_comercial ? `<div class="mut">${esc(c.nombre_comercial)}</div>` : ''}
   <div class="card" style="margin-top:10px">${F('Documento', `${c.tipo_documento} ${c.numero_documento}${c.digito_verificacion ? '-' + c.digito_verificacion : ''}`)}${F('Teléfono', c.telefono)}${F('Correo de facturación', c.email_facturacion)}${F('Dirección', c.direccion)}${F('Municipio', c.municipio)}
   ${F('Ruta', c.rutas?.nombre || '')}${F('Lista de precios', c.listas_precio?.nombre || '')}${F('Cupo y plazo', fmt(c.cupo) + ' · ' + (c.plazo_dias ? c.plazo_dias + ' días' : 'contado'))}</div>
+  ${avisoCartera(id)}
+  ${(() => { const ss = sucsDe(id), ed = ['administrador','gerencia'].includes(ROLE); return ss.length || ed ? `<div class="card"><div class="row"><b>🏬 Almacenes (${ss.length})</b>${ed ? `<button class="btn sm sec" onclick="formAlmacen('${id}')">＋ Agregar</button>` : ''}</div>${ss.map(x => `<div class="li"><div class="pn"><b>${esc(x.nombre)}</b><span>${esc(x.direccion || '')}${x.telefono ? ' · 📞 ' + esc(x.telefono) : ''}</span></div>${ed ? `<button class="btn sm sec" onclick="formAlmacen('${id}','${x.id}')">✏️</button>` : ''}</div>`).join('') || '<div class="mut">Si es una cadena, agrega aquí sus almacenes: cada pedido se entrega en uno y al final se cobra todo junto.</div>'}</div>` : ''; })()}
   ${['vendedor','conductor','administrador','bodega'].includes(ROLE) && c.activo !== false ? `<button class="btn sec" style="margin-bottom:10px" onclick="formDevolucion('${id}')">♻️ Registrar devolución</button>` : ''}
   ${c.activo === false ? '<div class="note warnnote">🚫 Cliente inactivo: no aparece para vender. Su historia se conserva.</div>' : ''}
   ${['administrador','gerencia'].includes(ROLE) ? `<button class="btn sec" style="margin-bottom:10px" onclick="activarCliente('${id}',${c.activo === false})">${c.activo === false ? '✅ Volver a activar' : '🚫 Desactivar cliente'}</button>` : ''}
@@ -1482,6 +1526,20 @@ async function cambiarActivo(id, on) {
   if (r.error) { colaSet([...colaGet(), { id: nuevoId(), dueno: ME.id, tipo: 'cliente_upd', args: { p_id: id, p_datos: { activo: on } } }]); toast('📵 Sin señal: el cambio se envía solo'); }
   else { toast(on ? 'Cliente activado' : 'Cliente desactivado'); lsDel(uk('dpd_clis')); }
   refresh();
+}
+function formAlmacen(cid, sid) {
+  const x = sid ? sucsDe(cid).find(y => y.id === sid) : {};
+  sheet(`<h2>${sid ? 'Modificar almacén' : 'Nuevo almacén'}</h2><div class="mut">${esc((C.cv[cid] || {}).razon_social || '')}</div>
+  <label>Nombre</label><input id="al_n" value="${esc(x.nombre || '')}" placeholder="Ej: Almacén Centro"><label>Dirección</label><input id="al_d" value="${esc(x.direccion || '')}"><label>Teléfono</label><input id="al_t" value="${esc(x.telefono || '')}" inputmode="tel">
+  <div style="height:14px"></div><button class="btn" onclick="guardarAlmacen('${cid}','${sid || ''}')">Guardar</button>`);
+}
+async function guardarAlmacen(cid, sid) {
+  const d = { nombre: $('#al_n').value.trim(), direccion: $('#al_d').value.trim() || null, telefono: $('#al_t').value.trim() || null };
+  if (!d.nombre) return toast('Escribe el nombre del almacén', true);
+  let r; try { r = sid ? await sb.from('sucursales_cliente').update(d).eq('id', sid) : await sb.from('sucursales_cliente').insert({ ...d, cliente_id: cid }); } catch (e) { r = { error: e }; }
+  if (r.error) return toast(esRed(r.error) ? 'Sin señal: los almacenes se guardan con internet' : friendly(r.error), true);
+  try { lsSet(uk('dpd_sucs'), await LD.sucs()); } catch (e) {}
+  toast('Almacén guardado'); verCliente(cid);
 }
 function editarCliente(id) { abrirFormCliente(C.cv[id], 'editar'); }
 function editarPendiente(id) { const x = colaGet().find(y => y.id === id); if (x) abrirFormCliente({ ...x.args, id }, 'pendiente'); }
@@ -1503,7 +1561,7 @@ async function abrirFormCliente(c, modo) {
   ${adm ? `<label>Ruta</label><div class="row" style="gap:8px"><select id="c_ruta"><option value="">Sin ruta</option>${sel(c && c.ruta_id, rutas.map(r => [r.id, r.nombre]))}</select><input id="c_nr" placeholder="o crea una nueva" style="flex:1"></div>
   <label>Vendedor</label><select id="c_ven"><option value="">Sin vendedor</option>${sel(c && c.vendedor_id, vends.map(x => [x.perfil_id, x.perfiles?.nombre || '']))}</select>
   <label>Lista de precios</label><select id="c_lis">${sel(c && c.lista_precio_id ? c.lista_precio_id : (listas.find(l => l.nombre === 'Tiendas') || {}).id, listas.map(l => [l.id, l.nombre]))}</select>
-  <div class="grid2"><div><label>Cupo de crédito ($)</label><input id="c_cupo" type="number" value="${c ? +c.cupo || 0 : 0}"></div><div><label>Plazo (días)</label><input id="c_pla" type="number" value="${c ? +c.plazo_dias || 0 : 0}"></div></div>
+  <div class="grid2"><div><label>Cupo de crédito ($)</label><input id="c_cupo" type="number" value="${c ? +c.cupo || 0 : 0}"></div><div><label>Plazo (días hábiles; 0 = 8)</label><input id="c_pla" type="number" value="${c ? +c.plazo_dias || 0 : 0}"></div></div>
   <label>Forma de pago habitual</label><select id="c_fp">${sel(c ? c.forma_pago_habitual : 'contado', [['contado','Contado'],['credito','Crédito'],['factura_contra_factura','Factura contra factura']])}</select>
   ` : `<div class="note" style="margin-top:12px">${modo === 'editar' ? 'La lista de precios, el cupo y el plazo los cambia la administración.' : 'Queda en tu ruta, de contado y con la lista Tiendas. La administración puede darle cupo o cambiarle la lista.'}</div>`}
   <div style="height:16px"></div><button class="btn" id="c_btn">${modo === 'nuevo' ? 'Guardar cliente' : 'Guardar cambios'}</button></form>`);
@@ -1813,6 +1871,120 @@ async function vistaVentas() {
 // service worker: la app abre aunque no haya señal
 if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
 
+// ---------- Cartera (Etapa 4) ----------
+V.cartera = async () => {
+  if (!['administrador','gerencia','cartera'].includes(ROLE)) return '<div class="empty"><span class="e">🔒</span>Solo administración, gerencia y cartera.</div>';
+  const puede = ['administrador','cartera'].includes(ROLE);
+  const [cl, pf, cs] = await Promise.all([cached('dpd_cartera', LD.cartera), cached('dpd_porfact', LD.porFacturar), cached('dpd_cuentas', LD.cuentas)]);
+  const hoy = new Date().toISOString().slice(0, 10), saldo = c => +c.total - (c.aplicaciones_cuenta || []).reduce((a, x) => a + +x.valor, 0);
+  C.cuentas = Object.fromEntries(cs.map(c => [c.id, { ...c, saldo: saldo(c) }]));
+  const abiertas = cs.filter(c => c.estado === 'abierta'), porCobrar = abiertas.reduce((a, c) => a + saldo(c), 0), vencido = abiertas.filter(c => c.vence_en < hoy).reduce((a, c) => a + saldo(c), 0);
+  const totPF = pf.reduce((a, x) => a + +x.total, 0);
+  sub.ca = sub.ca || (pf.length ? 'facturar' : 'cobrar');
+  const grupos = {}; pf.forEach(x => { (grupos[x.cliente_id] = grupos[x.cliente_id] || { cliente: x.cliente, l: [] }).l.push(x); });
+  C.pfSel = C.pfSel || {}; Object.entries(grupos).forEach(([k, g]) => { if (!C.pfSel[k]) C.pfSel[k] = new Set(g.l.map(x => x.pedido_id)); });
+  C.pfGrupos = grupos;
+  const cuentaCard = (c, i) => { const s = saldo(c), venc = c.estado === 'abierta' && c.vence_en < hoy, dias = c.vence_en ? Math.round((new Date(c.vence_en) - new Date(hoy)) / 864e5) : null;
+    return `<div class="card" ${dl(i)}><div class="row"><b class="serif" style="font-size:17px">CC-${c.numero} · ${esc(c.clientes?.razon_social || '')}</b><span class="badge ${c.estado === 'pagada' ? 'b-ok' : venc ? 'b-bad' : 'b-pend'}">${c.estado === 'pagada' ? 'Pagada' : venc ? 'Vencida hace ' + -dias + ' d' : dias === 0 ? 'Vence hoy' : 'Vence en ' + dias + ' d'}</span></div>
+    <div class="mut">${fdate(c.fecha)} · ${c.cuenta_cobro_pedidos.length} entregas · ${c.plazo_dias} días hábiles${c.vence_en ? ' · vence ' + fdate(c.vence_en + 'T12:00') : ''}${c.factura_electronica ? ' · FE ' + esc(c.factura_electronica) : ' · <b style="color:var(--terra2)">sin número de factura</b>'}</div>
+    <div class="row" style="margin-top:8px"><span>Total ${fmt(c.total)}</span><b class="big" style="font-size:19px;color:${s > 0 ? 'var(--terra2)' : 'var(--ok)'}">${s > 0 ? 'Debe ' + fmt(s) : 'Pagada'}</b></div>
+    <div class="acts"><button class="btn sm sec" onclick="verCuenta('${c.id}')">🧾 Ver</button>${puede && c.estado === 'abierta' ? `<button class="btn sm sec" onclick="formFactura('${c.id}')">✏️ Factura</button><button class="btn sm okb" onclick="formPago('${c.cliente_id}','${c.id}')">💵 Registrar pago</button>` : ''}</div></div>`; };
+  const segs = [['facturar', 'Por facturar (' + Object.keys(grupos).length + ')'], ['cobrar', 'Por cobrar (' + abiertas.length + ')'], ['clientes', 'Clientes'], ['pagadas', 'Pagadas']];
+  return `<div class="row"><h2>💰 Cartera</h2><button class="btn sm sec" onclick="['dpd_cartera','dpd_porfact','dpd_cuentas'].forEach(k=>lsDel(uk(k)));refresh()">↻</button></div>
+  <div class="hero"><div style="flex:1"><div class="lbl">Por cobrar</div><div class="val">${fmt(porCobrar)}</div><div style="font-size:13px;opacity:.85;font-weight:700">${vencido ? '🔴 Vencido ' + fmt(vencido) + ' · ' : ''}Por facturar ${fmt(totPF)}</div></div><div style="font-size:42px">💰</div></div>
+  <div class="seg">${segs.map(([k, n]) => `<button class="${sub.ca === k ? 'on' : ''}" onclick="sub.ca='${k}';refresh()">${n}</button>`).join('')}</div>
+  ${sub.ca === 'facturar' ? `<div class="note">Entregas hechas que aún no están en una cuenta de cobro. Escoge las de cada cliente (por ejemplo, toda la ronda de sus almacenes) y haz una sola cuenta.</div>
+    ${Object.entries(grupos).map(([cid, g]) => `<div class="card"><div class="row"><b>${esc(g.cliente)}</b><b>${fmt(g.l.reduce((a, x) => a + +x.total, 0))}</b></div>${avisoCartera(cid)}
+      ${g.l.map(x => `<label class="li" style="cursor:pointer;margin:0"><input type="checkbox" style="width:22px;height:22px" ${C.pfSel[cid].has(x.pedido_id) ? 'checked' : ''} onchange="this.checked?C.pfSel['${cid}'].add('${x.pedido_id}'):C.pfSel['${cid}'].delete('${x.pedido_id}')"><div class="pn"><b>Pedido #${x.numero}${x.sucursal ? ' · ' + esc(x.sucursal) : ''}</b><span>${fdate(x.fecha)}${x.estado === 'entregado_parcial' ? ' · entrega parcial' : ''}</span></div><b>${fmt(x.total)}</b></label>`).join('')}
+      ${puede ? `<button class="btn" style="margin-top:10px" onclick="formCuenta('${cid}')">🧾 Hacer cuenta de cobro</button>` : ''}</div>`).join('') || '<div class="empty"><span class="e">✅</span>Todo lo entregado ya está facturado</div>'}`
+  : sub.ca === 'cobrar' ? (abiertas.sort((a, b) => (a.vence_en || '').localeCompare(b.vence_en || '')).map(cuentaCard).join('') || '<div class="empty"><span class="e">🎉</span>No hay cuentas por cobrar</div>')
+  : sub.ca === 'clientes' ? `<div class="card">${cl.map(k => `<div class="li"><div class="pn"><b>${esc(k.cliente)}</b><span>${+k.vencido > 0 ? `<b style="color:var(--bad)">Vencido ${fmt(k.vencido)}</b> · ` : ''}${k.cuentas_abiertas} cuentas · por facturar ${fmt(k.por_facturar)}${+k.pagos_a_favor > 0 ? ' · a favor ' + fmt(k.pagos_a_favor) : ''}${+k.cupo > 0 ? ' · cupo ' + fmt(k.cupo) : ''}</span></div><b>${fmt(k.saldo)}</b></div>`).join('') || '<div class="mut">Ningún cliente debe.</div>'}</div>
+    ${puede ? '<button class="btn sec" onclick="formPago()">💵 Registrar un pago</button>' : ''}`
+  : (cs.filter(c => c.estado === 'pagada').map(cuentaCard).join('') || '<div class="empty"><span class="e">🧾</span>Aún no hay cuentas pagadas</div>')}`;
+};
+function formCuenta(cid) {
+  const sel = [...C.pfSel[cid]], g = C.pfGrupos[cid], tot = g.l.filter(x => sel.includes(x.pedido_id)).reduce((a, x) => a + +x.total, 0);
+  if (!sel.length) return toast('Marca las entregas que van en la cuenta', true);
+  sheet(`<h2>🧾 Cuenta de cobro</h2><div class="mut">${esc(g.cliente)} · ${sel.length} entregas</div>
+  <div class="card"><div class="row"><b>Total</b><span class="big">${fmt(tot)}</span></div></div>
+  <label>Número de la factura electrónica (Siigo)</label><input id="cc_f" placeholder="Opcional; lo puedes anotar después">
+  <label>Fecha en que el cliente recibe la factura</label><input id="cc_e" type="date" value="${new Date().toISOString().slice(0, 10)}">
+  <div class="mut">El plazo (8 días hábiles si el cliente no tiene otro) se cuenta desde esta fecha.</div>
+  <label>Nota</label><input id="cc_n" placeholder="Ej: ronda semana 47">
+  <div style="height:14px"></div><button class="btn" id="cc_b" onclick="guardarCuenta('${cid}')">✓ Crear cuenta de cobro</button>`);
+}
+async function guardarCuenta(cid) {
+  const b = $('#cc_b'); b.disabled = true;
+  const r = await rpcX('crear_cuenta_cobro', { p_id: nuevoId(), p_cliente: cid, p_pedidos: [...C.pfSel[cid]], p_factura: $('#cc_f').value.trim() || null, p_enviada: $('#cc_e').value || null, p_nota: $('#cc_n').value.trim() || null });
+  if (r.error) { b.disabled = false; return toast(esRed(r.error) ? 'Sin señal: las cuentas de cobro se hacen con internet' : faltaScript(r.error, '014') || friendly(r.error), true); }
+  delete C.pfSel[cid]; ['dpd_cartera','dpd_porfact','dpd_cuentas'].forEach(k => lsDel(uk(k)));
+  toast('Cuenta CC-' + r.data[0].numero + ' creada · vence ' + fdate(r.data[0].vence_en + 'T12:00')); closeSheet(); sub.ca = 'cobrar'; await refresh();
+  const id = r.data[0].cuenta_id; if (C.cuentas[id]) verCuenta(id);
+}
+function formFactura(id) {
+  const c = C.cuentas[id];
+  sheet(`<h2>✏️ CC-${c.numero}</h2><label>Número de la factura electrónica (Siigo)</label><input id="ff_f" value="${esc(c.factura_electronica || '')}">
+  <label>Fecha en que el cliente recibió la factura</label><input id="ff_e" type="date" value="${c.enviada_en || ''}"><div class="mut">Cambiarla recalcula el vencimiento.</div>
+  <label>Nota</label><input id="ff_n" value="${esc(c.nota || '')}">
+  <div style="height:14px"></div><button class="btn" onclick="guardarFactura('${id}')">Guardar</button>
+  ${ROLE === 'administrador' && !c.aplicaciones_cuenta.length ? `<div style="height:10px"></div><button class="btn sec" onclick="anularCuenta('${id}')">Anular cuenta</button>` : ''}`);
+}
+async function guardarFactura(id) {
+  const r = await rpcX('actualizar_cuenta_cobro', { p_cuenta: id, p_factura: $('#ff_f').value.trim(), p_enviada: $('#ff_e').value || null, p_nota: $('#ff_n').value.trim() || null });
+  if (r.error) return toast(esRed(r.error) ? 'Sin señal: esto se guarda con internet' : friendly(r.error), true);
+  lsDel(uk('dpd_cuentas')); closeSheet(); toast('Guardado · vence ' + fdate(r.data + 'T12:00')); refresh();
+}
+async function anularCuenta(id) {
+  const m = $('#ff_n').value.trim();
+  const r = await rpcX('anular_cuenta_cobro', { p_cuenta: id, p_motivo: m || 'sin motivo' });
+  if (r.error) return toast(esRed(r.error) ? 'Sin señal: esto se hace con internet' : friendly(r.error), true);
+  ['dpd_cartera','dpd_porfact','dpd_cuentas'].forEach(k => lsDel(uk(k))); closeSheet(); toast('Cuenta anulada: sus entregas vuelven a "Por facturar"'); refresh();
+}
+async function formPago(cid, cuenta) {
+  const cl = lsGet(uk('dpd_cartera')) || [];
+  cid = cid || (cl[0] || {}).cliente_id;
+  const abiertas = Object.values(C.cuentas || {}).filter(c => c.cliente_id === cid && c.estado === 'abierta' && c.saldo > 0).sort((a, b) => (a.vence_en || '').localeCompare(b.vence_en || ''));
+  C.pgSel = new Set(cuenta ? [cuenta] : abiertas.map(c => c.id));
+  const sug = abiertas.filter(c => C.pgSel.has(c.id)).reduce((a, c) => a + c.saldo, 0);
+  sheet(`<h2>💵 Registrar pago</h2>
+  <label>Cliente</label><select id="pg_c" onchange="formPago(this.value)">${cl.map(k => `<option value="${k.cliente_id}" ${k.cliente_id === cid ? 'selected' : ''}>${esc(k.cliente)} · debe ${fmt(k.saldo)}</option>`).join('')}</select>
+  ${abiertas.length ? `<label>Se abona a</label><div class="card">${abiertas.map(c => `<label class="li" style="cursor:pointer;margin:0"><input type="checkbox" style="width:22px;height:22px" ${C.pgSel.has(c.id) ? 'checked' : ''} onchange="this.checked?C.pgSel.add('${c.id}'):C.pgSel.delete('${c.id}')"><div class="pn"><b>CC-${c.numero}${c.factura_electronica ? ' · FE ' + esc(c.factura_electronica) : ''}</b><span>Vence ${c.vence_en ? fdate(c.vence_en + 'T12:00') : '—'}</span></div><b>${fmt(c.saldo)}</b></label>`).join('')}</div><div class="mut">Se aplica primero a la que vence antes. Si sobra, queda a favor del cliente.</div>` : '<div class="note">Este cliente no tiene cuentas abiertas: el pago queda a favor.</div>'}
+  <label>Valor</label><input id="pg_v" type="number" inputmode="numeric" value="${sug || ''}" style="font-size:22px;font-weight:900">
+  <label>Medio</label><select id="pg_m">${['transferencia','nequi','daviplata','efectivo','tarjeta','otro'].map(m => `<option value="${m}">${MEDIO_N[m] || m}</option>`).join('')}</select>
+  <label>Referencia (número de la transferencia)</label><input id="pg_r"><label>Fecha del pago</label><input id="pg_f" type="date" value="${new Date().toISOString().slice(0, 10)}">
+  <div style="height:14px"></div><button class="btn" id="pg_b" onclick="guardarPago()">✓ Registrar pago</button>`);
+}
+async function guardarPago() {
+  const v = +$('#pg_v').value; if (!(v > 0)) return toast('Escribe el valor', true);
+  const b = $('#pg_b'); b.disabled = true;
+  const f = $('#pg_f').value, r = await rpcX('registrar_pago', { p_id: nuevoId(), p_cliente: $('#pg_c').value, p_valor: v, p_medio: $('#pg_m').value, p_referencia: $('#pg_r').value.trim() || null,
+    p_fecha: f ? new Date(f + 'T12:00').toISOString() : new Date().toISOString(), p_cuentas: C.pgSel.size ? [...C.pgSel] : null, p_obs: null });
+  if (r.error) { b.disabled = false; return toast(esRed(r.error) ? 'Sin señal: los pagos se registran con internet' : faltaScript(r.error, '014') || friendly(r.error), true); }
+  const x = r.data[0]; ['dpd_cartera','dpd_cuentas'].forEach(k => lsDel(uk(k))); closeSheet();
+  toast('Recibo RC-' + x.recibo + ': aplicado ' + fmt(x.aplicado) + (+x.a_favor > 0 ? ' · queda a favor ' + fmt(x.a_favor) : '')); refresh();
+}
+// Cuenta de cobro consolidada (hoja carta): por producto y por almacén
+async function verCuenta(id) {
+  const c = C.cuentas[id];
+  sheet(`<div id="cc_doc"><div class="empty"><span class="e spin">🥖</span>Armando la cuenta…</div></div>`);
+  let d; try { d = await q(sb.rpc('detalle_cuenta', { p_cuenta: id })); } catch (e) { $('#cc_doc').innerHTML = `<div class="note warnnote">${esRed(e) ? '📵 Sin señal: el detalle se consulta con internet.' : esc(friendly(e))}</div>`; return; }
+  const e = EMP(), cl = c.clientes || {}, prod = {}, alm = {};
+  d.forEach(x => { const k = x.producto_id + '|' + x.precio; prod[k] = prod[k] || { id: x.producto_id, precio: +x.precio, n: 0, v: 0 }; prod[k].n += +x.cantidad; prod[k].v += +x.valor;
+    alm[x.sucursal] = alm[x.sucursal] || { peds: new Set(), v: 0 }; alm[x.sucursal].peds.add(x.pedido); alm[x.sucursal].v += +x.valor; });
+  const filas = Object.values(prod).sort((a, b) => (P(a.id).codigo || '').localeCompare(P(b.id).codigo || ''));
+  const txt = `Cuenta de cobro CC-${c.numero} · ${e.razon_social || BRAND}\nCliente: ${cl.razon_social}\nTotal: ${fmt(c.total)} · Vence: ${c.vence_en ? new Date(c.vence_en + 'T12:00').toLocaleDateString('es-CO') : ''}${c.factura_electronica ? '\nFactura electrónica: ' + c.factura_electronica : ''}\n\n` + filas.map(f => `${f.n} x ${nice(P(f.id).nombre || '')}: ${fmt(f.v)}`).join('\n');
+  $('#cc_doc').outerHTML = `<div id="printarea" class="carta"><div class="row" style="align-items:flex-start"><img src="${LOGO_CLARO}" alt="${BRAND}" style="width:150px"><div style="text-align:right"><b style="font-size:18px">CUENTA DE COBRO CC-${c.numero}</b><br>Fecha ${new Date(c.fecha).toLocaleDateString('es-CO')}<br>${c.factura_electronica ? 'Factura electrónica ' + esc(c.factura_electronica) + '<br>' : ''}<b>Vence ${c.vence_en ? new Date(c.vence_en + 'T12:00').toLocaleDateString('es-CO') : ''}</b> (${c.plazo_dias} días hábiles)</div></div>
+  <div class="grid2" style="margin:12px 0;font-size:13px"><div><b>${esc(e.razon_social || BRAND)}</b><br>${e.nit ? 'NIT ' + esc(e.nit) + (e.digito_verificacion ? '-' + esc(e.digito_verificacion) : '') + '<br>' : ''}${esc(e.direccion || '')} ${esc(e.municipio || 'Yopal')}<br>${esc(e.telefono || '')} ${esc(e.correo || '')}</div>
+  <div><b>Cliente:</b> ${esc(cl.razon_social || '')}<br>${esc(cl.tipo_documento || '')} ${esc(cl.numero_documento || '')}${cl.digito_verificacion ? '-' + esc(cl.digito_verificacion) : ''}<br>${esc(cl.direccion || '')} ${esc(cl.municipio || '')}<br>${esc(cl.email_facturacion || '')}</div></div>
+  <table class="tabla"><tr><th>Código</th><th>Producto</th><th style="text-align:right">Cant.</th><th style="text-align:right">Precio</th><th style="text-align:right">Valor</th></tr>
+  ${filas.map(f => `<tr><td>${esc(P(f.id).codigo || '')}</td><td>${esc(nice(P(f.id).nombre || ''))}</td><td style="text-align:right">${f.n}</td><td style="text-align:right">${fmt(f.precio)}</td><td style="text-align:right">${fmt(f.v)}</td></tr>`).join('')}
+  <tr><td colspan="4" style="text-align:right"><b>TOTAL</b></td><td style="text-align:right"><b>${fmt(c.total)}</b></td></tr></table>
+  <div style="margin-top:12px;font-size:13px"><b>Entregas incluidas</b>${Object.entries(alm).map(([n, a]) => `<div class="row"><span>${esc(n)} · pedidos ${[...a.peds].map(x => '#' + x).join(', ')}</span><span>${fmt(a.v)}</span></div>`).join('')}</div>
+  ${c.nota ? `<div style="margin-top:8px;font-size:13px">${esc(c.nota)}</div>` : ''}
+  <div style="margin-top:10px;font-size:12px">${c.estado === 'pagada' ? '<b>PAGADA</b>' : 'Saldo pendiente: <b>' + fmt(c.saldo) + '</b>'}</div></div>
+  <div class="grid2" style="margin-top:14px"><button class="btn" onclick="imprimir()">🖨️ Imprimir o PDF</button><a class="btn sec" style="text-decoration:none" href="https://wa.me/?text=${encodeURIComponent(txt)}" target="_blank" rel="noopener">📲 WhatsApp</a></div>
+  <div style="height:10px"></div><button class="btn sec" onclick="closeSheet()">Cerrar</button>`;
+}
 V.proximo = async () => `<h2>${ROLE === 'cartera' ? 'Cartera' : 'Rutas'}</h2><div class="empty"><span class="e">🛠️</span>Este módulo llega en la ${ROLE === 'cartera' ? 'Fase 8 (cartera y recaudo)' : 'Fase 9 (logística)'}.</div>`;
 
 sb.auth.onAuthStateChange((ev) => { if (ev === 'SIGNED_OUT') showLogin(); });
