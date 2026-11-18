@@ -364,6 +364,8 @@ function enviarPend(it) {
   if (it.tipo === 'estado') return enviarEstado(it);
   if (it.tipo === 'entrada') return rpcX('registrar_entrada', { ...it.args, p_autor: it.dueno });
   if (it.tipo === 'cliente_upd') return rpcX('actualizar_cliente', { ...it.args, p_autor: it.dueno });
+  if (it.tipo === 'compra') return rpcX('guardar_compra', { ...it.args, p_autor: it.dueno });
+  if (it.tipo === 'recepcion') return rpcX('registrar_recepcion', { ...it.args, p_autor: it.dueno });
   return rpcVenta({ ...it.args, p_vendedor: it.dueno });
 }
 // Envía una venta a nombre de quien la hizo. Si la base aún no tiene el script 005, se envía sin ese dato
@@ -389,7 +391,7 @@ async function syncCola(manual) {
       const base = c.find(x => x.tipo === 'cliente' && x.error && it.args && it.args.p_cliente === x.id);
       if (base && base !== it) { it.error = 'El cliente nuevo no se pudo crear: ' + base.error; continue; }
       const r = await enviarPend(it);
-      if (r.error) { if (esRed(r.error)) break; it.error = faltaScript(r.error, it.tipo === 'pedido' ? '006' : ['cliente','entrada'].includes(it.tipo) ? '007' : it.tipo === 'cliente_upd' ? '008' : '005') || friendly(r.error); continue; }
+      if (r.error) { if (esRed(r.error)) break; it.error = faltaScript(r.error, it.tipo === 'pedido' ? '006' : ['cliente','entrada'].includes(it.tipo) ? '007' : it.tipo === 'cliente_upd' ? '008' : ['compra','recepcion'].includes(it.tipo) ? '010' : '005') || friendly(r.error); continue; }
       if (it.tipo === 'cliente' && r.data && r.data[0] && r.data[0].cliente_id !== it.id) {
         // Ya existía con ese documento: lo pendiente queda a nombre del cliente existente
         const real = r.data[0].cliente_id; c.forEach(x => { if (x.args && x.args.p_cliente === it.id) x.args.p_cliente = real; if (x.tipo === 'cliente_upd' && x.args.p_id === it.id) x.args.p_id = real; });
@@ -413,7 +415,7 @@ const TABS = {
   gerencia:      [['resumen','✨','Resumen'],['pedidos','✅','Pedidos'],['precios','🏷️','Productos'],['clientes','👥','Clientes']],
   vendedor:      [['inicio','🏠','Inicio'],['contado','💵','Contado'],['vender','🛒','Pedido'],['pedidos','📋','Pedidos'],['clientes','👥','Clientes']],
   cliente:       [['vitrina','🥐','Vitrina'],['pedidos','🚚','Mis pedidos']],
-  bodega:        [['alistar','📦','Alistar'],['recibir','🚛','Recibir'],['inventario','📊','Inventario']],
+  bodega:        [['alistar','📦','Alistar'],['compras','🧾','Compras'],['recibir','🚛','Recibir'],['inventario','📊','Inventario']],
   cartera:       [['pedidos','📋','Pedidos'],['clientes','👥','Clientes'],['proximo','💰','Cartera']],
   conductor:     [['pedidos','🚚','Entregas'],['proximo','🗺️','Rutas']]
 };
@@ -485,7 +487,7 @@ async function loadMe() {
   shell(); await go(TABS[ROLE][0][0]); pintarRed(); syncCola(); precargar();
 }
 function resumenPend(pend) {
-  const N = { venta: ['venta','ventas'], pedido: ['pedido','pedidos'], cliente: ['cliente nuevo','clientes nuevos'], cliente_upd: ['cambio de cliente','cambios de clientes'], estado: ['cambio de pedido','cambios de pedidos'], entrada: ['entrada de mercancía','entradas de mercancía'] };
+  const N = { venta: ['venta','ventas'], pedido: ['pedido','pedidos'], cliente: ['cliente nuevo','clientes nuevos'], cliente_upd: ['cambio de cliente','cambios de clientes'], compra: ['pedido de compra','pedidos de compra'], recepcion: ['recepción de mercancía','recepciones de mercancía'], estado: ['cambio de pedido','cambios de pedidos'], entrada: ['entrada de mercancía','entradas de mercancía'] };
   const k = {}; pend.forEach(x => { const t = x.tipo || 'venta'; k[t] = (k[t] || 0) + 1; });
   const l = Object.entries(k).map(([t, n]) => n + ' ' + N[t][n > 1 ? 1 : 0]);
   return l.length > 1 ? l.slice(0, -1).join(', ') + ' y ' + l.at(-1) : l[0];
@@ -517,7 +519,9 @@ async function precargar() {
     if (['vendedor','cartera','conductor','cliente'].includes(ROLE)) await paso('dpd_peds_todos', () => loadPedidos());
     if (['administrador','gerencia','vendedor','cartera'].includes(ROLE)) await paso('dpd_cliview', LD.cliView);
     if (ROLE === 'vendedor') await paso('dpd_mios', LD.mios);
-    if (['administrador','bodega'].includes(ROLE)) { await paso('dpd_alistar', LD.alistar); await paso('dpd_stock', LD.stock); await paso('dpd_movs', LD.movs); }
+    if (['administrador','bodega'].includes(ROLE)) { await paso('dpd_alistar', LD.alistar); await paso('dpd_stock', LD.stock); await paso('dpd_movs', LD.movs);
+      await paso('dpd_provs', LD.provs); await paso('dpd_compras', LD.compras); await paso('dpd_recs', LD.recs); await paso('dpd_venc', LD.venc); }
+    if (ROLE === 'gerencia') { await paso('dpd_compras', LD.compras); await paso('dpd_stock', LD.stock); await paso('dpd_venc', LD.venc); }
     if (ROLE === 'cliente') await loadCatalog(null, true).catch(() => {});
   } finally { SILENCIO--; }
 }
@@ -530,6 +534,10 @@ const LD = {
   vends: () => q(sb.from('vendedores').select('perfil_id,perfiles(nombre)')),
   cliView: () => q(sb.from('clientes').select('id,razon_social,nombre_comercial,numero_documento,digito_verificacion,tipo_documento,telefono,email_facturacion,direccion,municipio,cupo,plazo_dias,forma_pago_habitual,activo,ruta_id,vendedor_id,lista_precio_id,rutas(nombre),listas_precio(nombre)').order('razon_social')),
   mios: () => q(sb.rpc('clientes_creados_por_mi')),
+  provs: () => q(sb.from('proveedores').select('id,nombre,nit,telefono,contacto,activo').order('nombre')),
+  compras: () => q(sb.from('compras').select('id,numero,fecha,estado,observaciones,proveedor_id,proveedores(nombre),compra_items(producto_id,cantidad)').neq('estado', 'anulada').order('numero', { ascending: false }).limit(40)),
+  recs: () => q(sb.from('recepciones').select('id,fecha,documento_origen,compra_id,proveedores(nombre),recepcion_items(producto_id,cantidad_recibida,cantidad_averiada)').order('fecha', { ascending: false }).limit(15)),
+  venc: () => q(sb.rpc('por_vencer', { p_dias: 7 })),
   alistar: () => loadPedidos(['aprobado','en_alistamiento']),
   stock: () => q(sb.from('stock_actual').select('producto_id,cantidad')),
   movs: () => q(sb.from('movimientos_inventario').select('producto_id,cantidad,creado_en,nota').eq('tipo', 'entrada').order('creado_en', { ascending: false }).limit(10)),
@@ -777,15 +785,180 @@ V.alistar = async () => {
   return `<div class="row"><h2>Pedidos para alistar</h2><button class="btn sm sec" onclick="refresh()">↻</button></div>${peds.map(pedCard).join('') || '<div class="empty"><span class="e">😌</span>No hay pedidos aprobados por alistar</div>'}`;
 };
 V.recibir = async () => {
-  const movs = await cached('dpd_movs', LD.movs).catch(e => { if (!esRed(e)) throw e; return []; });
-  const pend = colaGet().filter(x => x.tipo === 'entrada');
+  const [compras, recs] = await Promise.all([cached('dpd_compras', LD.compras), cached('dpd_recs', LD.recs)]).catch(e => { if (!esRed(e)) throw e; return [[], []]; });
+  const recibidas = new Set(colaGet().filter(x => x.tipo === 'recepcion').map(x => x.args.p_compra));
+  const porRecibir = [...colaGet().filter(x => x.tipo === 'compra').map(x => ({ id: x.id, numero: null, fecha: x.fecha, estado: 'enviada', proveedores: { nombre: x.prov }, compra_items: x.args.p_items, _pend: x })),
+    ...compras.filter(c => ['enviada','recibida_parcial'].includes(c.estado))].filter(c => !recibidas.has(c.id));
+  const pend = colaGet().filter(x => x.tipo === 'recepcion' || x.tipo === 'entrada');
+  C.compras = Object.fromEntries(porRecibir.map(c => [c.id, c]));
   return `${ROUTE_BANNER.replace('Recién llegado de Bogotá', 'Llegó el camión').replace('Pan fresco rumbo a tu tienda en el Llano 🚚', 'Registra lo que llegó de Bogotá')}
-  <div class="card"><label style="margin-top:0">Producto</label><select id="rp">${CAT.map(p => `<option value="${p.id}">${nm(p)}</option>`).join('')}</select>
-  <label>Cantidad recibida</label><input id="rq" type="number" inputmode="numeric" min="1" value="12" style="font-size:22px;font-weight:900">
-  <label>Remisión o factura de origen</label><input id="rd" placeholder="Opcional">
-  <div style="height:14px"></div><button class="btn" onclick="recibir()">➕ Agregar al inventario</button></div>
-  <h3>Últimas entradas</h3>${pend.map(x => { const p = P(x.args.p_producto); return `<div class="card" style="border:2px dashed #D9486A"><div class="li" style="padding:0;border:0">${pArtP(p)}<div class="pn"><b>${nm(p)}</b><span>${x.error ? '⚠️ ' + esc(x.error) : '📵 Por enviar'}${x.args.p_nota ? ' · ' + esc(x.args.p_nota) : ''}</span></div><span class="badge b-pend">+${+x.args.p_cantidad}</span></div>${x.error ? `<button class="btn sm sec" style="margin-top:8px" onclick="quitarPend('${x.id}')">Quitar</button>` : ''}</div>`; }).join('')}${movs.map((m, i) => { const p = P(m.producto_id); return `<div class="card" ${dl(i)}><div class="li" style="padding:0;border:0">${pArtP(p)}<div class="pn"><b>${nm(p)}</b><span>${fdate(m.creado_en)}${m.nota ? ' · ' + esc(m.nota) : ''}</span></div><span class="badge b-ok">+${+m.cantidad}</span></div></div>`; }).join('') || '<div class="empty"><span class="e">🚛</span>Aún no hay entradas</div>'}`;
+  <h3>Pedidos de compra por recibir</h3>
+  ${porRecibir.map((c, i) => `<div class="card" ${dl(i)}><div class="row"><b>${c.numero ? 'Compra C-' + c.numero : 'Compra sin enviar'}</b>${badgeCompra(c.estado)}</div>
+    <div class="mut">${esc(c.proveedores?.nombre || '')} · ${fdate(c.fecha || new Date().toISOString())} · ${c.compra_items.length} productos</div>
+    <div class="acts"><button class="btn sm okb" onclick="C.rc='${c.id}';go('recepcion')">📦 Recibir</button></div></div>`).join('') || '<div class="mut">No hay pedidos de compra pendientes.</div>'}
+  <button class="btn sec" style="margin-top:12px" onclick="C.rc=null;go('recepcion')">＋ Recibir sin pedido de compra</button>
+  <h3>Últimas recepciones</h3>
+  ${pend.map(x => `<div class="card" style="border:2px dashed #D9486A"><div class="row"><b>${x.tipo === 'recepcion' ? 'Recepción' + (x.args.p_documento ? ' · ' + esc(x.args.p_documento) : '') : nm(P(x.args.p_producto)) + ' +' + (+x.args.p_cantidad)}</b><span class="badge b-pend">📵 Por enviar</span></div>
+    ${x.error ? `<div class="note warnnote">⚠️ ${esc(x.error)}</div><button class="btn sm sec" onclick="quitarPend('${x.id}')">Quitar</button>` : `<div class="mut">${x.tipo === 'recepcion' ? x.args.p_items.length + ' productos · ' : ''}se suma solo cuando haya señal</div>`}</div>`).join('')}
+  ${recs.map((r, i) => { const bien = r.recepcion_items.reduce((a, x) => a + (+x.cantidad_recibida - +x.cantidad_averiada), 0), dan = r.recepcion_items.reduce((a, x) => a + +x.cantidad_averiada, 0);
+    return `<div class="card" ${dl(i)}><div class="row"><b>${esc(r.proveedores?.nombre || 'Recepción')}${r.documento_origen ? ' · ' + esc(r.documento_origen) : ''}</b><span class="badge b-ok">+${bien}</span></div>
+    <div class="mut">${fdate(r.fecha)} · ${r.recepcion_items.length} productos${dan ? ` · <b style="color:var(--bad)">${dan} dañados</b>` : ''}</div></div>`; }).join('') || (pend.length ? '' : '<div class="empty"><span class="e">🚛</span>Aún no hay recepciones</div>')}`;
 };
+const badgeCompra = e => `<span class="badge ${{ enviada: 'b-pend', recibida_parcial: 'b-info', recibida: 'b-ok', anulada: 'b-bad' }[e] || 'b-mut'}">${{ enviada: 'Por recibir', recibida_parcial: 'Recibida en parte', recibida: 'Recibida', anulada: 'Anulada' }[e] || e}</span>`;
+// Recepción: con pedido de compra (trae lo pedido) o sin pedido (se agregan productos)
+V.recepcion = async () => {
+  if (!['administrador','bodega'].includes(ROLE)) return '<div class="empty"><span class="e">🔒</span>Solo bodega y administración reciben mercancía.</div>';
+  const c = C.rc ? (C.compras || {})[C.rc] : null, provs = await cached('dpd_provs', LD.provs).catch(() => []);
+  if (!C.rlin || C.rlinDe !== (C.rc || 'libre')) {
+    C.rlinDe = C.rc || 'libre';
+    C.rlin = c ? c.compra_items.map(i => ({ producto_id: i.producto_id, esperada: +i.cantidad, bien: +i.cantidad, danada: 0, lote: '', vence: '' })) : [];
+  }
+  return `<div class="row"><h2>${c ? 'Recibir compra' + (c.numero ? ' C-' + c.numero : '') : 'Recibir sin pedido'}</h2><button class="btn sm sec" onclick="go('recibir')">← Volver</button></div>
+  <div class="card">${c ? `<div class="mut">${esc(c.proveedores?.nombre || '')}</div>` : `<label style="margin-top:0">Proveedor</label><select id="r_prov">${provs.filter(p => p.activo).map(p => `<option value="${p.id}">${esc(p.nombre)}</option>`).join('')}</select>`}
+  <label${c ? '' : ''}>Remisión o factura de origen</label><input id="r_doc" placeholder="Ej: remisión 4455">
+  <div class="note" style="margin-top:10px">Escribe cuánto llegó <b>bien</b> y cuánto <b>dañado</b>. Lo dañado no se suma al inventario: queda anotado para el reclamo. El lote y la fecha de vencimiento vienen en el empaque.</div></div>
+  ${c ? '' : `<div class="card"><label style="margin-top:0">Agregar producto</label><div class="row" style="gap:8px"><select id="r_add" style="flex:1">${CAT.map(p => `<option value="${p.id}">${nm(p)}</option>`).join('')}</select><button class="btn sm" onclick="agregarLineaRec()">＋</button></div></div>`}
+  <div id="r_lineas">${lineasRecHTML()}</div>
+  <label>Observaciones</label><input id="r_obs" placeholder="Opcional">
+  <div style="height:14px"></div><button class="btn" id="r_btn" onclick="guardarRecepcion()">✓ Confirmar recepción</button>`;
+};
+function lineasRecHTML() {
+  return C.rlin.map((l, i) => { const p = P(l.producto_id), dif = l.esperada != null ? (+l.bien + +l.danada) - l.esperada : 0;
+    return `<div class="card"><div class="li" style="padding:0;border:0">${pArtP(p)}<div class="pn"><b>${nm(p)}</b><span>${l.esperada != null ? 'Pedido: ' + l.esperada : 'Sin pedido'}${dif < 0 ? ` · <b style="color:var(--bad)">faltan ${-dif}</b>` : dif > 0 ? ` · <b>llegaron ${dif} de más</b>` : ''}</span></div>${l.esperada == null ? `<button class="btn sm sec" onclick="C.rlin.splice(${i},1);$('#r_lineas').innerHTML=lineasRecHTML()">✕</button>` : ''}</div>
+    <div class="grid2"><div><label>Llegó bien</label><input type="number" inputmode="numeric" min="0" value="${l.bien}" onchange="C.rlin[${i}].bien=+this.value||0;$('#r_lineas').innerHTML=lineasRecHTML()"></div>
+    <div><label>Llegó dañado</label><input type="number" inputmode="numeric" min="0" value="${l.danada}" onchange="C.rlin[${i}].danada=+this.value||0;$('#r_lineas').innerHTML=lineasRecHTML()"></div></div>
+    <div class="grid2"><div><label>Lote</label><input value="${esc(l.lote)}" onchange="C.rlin[${i}].lote=this.value.trim()"></div>
+    <div><label>Vence</label><input type="date" value="${l.vence}" onchange="C.rlin[${i}].vence=this.value"></div></div></div>`; }).join('') || '<div class="mut">Agrega los productos que llegaron.</div>';
+}
+function agregarLineaRec() {
+  const id = $('#r_add').value; if (C.rlin.some(l => l.producto_id === id)) return toast('Ese producto ya está en la lista', true);
+  C.rlin.push({ producto_id: id, esperada: null, bien: 0, danada: 0, lote: '', vence: '' }); $('#r_lineas').innerHTML = lineasRecHTML();
+}
+async function guardarRecepcion() {
+  const items = C.rlin.filter(l => +l.bien + +l.danada > 0);
+  if (!items.length) return toast('Escribe cuánto llegó de al menos un producto', true);
+  const sinFecha = items.filter(l => +l.bien > 0 && !l.vence).length;
+  if (sinFecha && !C.rAviso) { C.rAviso = true; return toast(sinFecha + (sinFecha > 1 ? ' productos no tienen' : ' producto no tiene') + ' fecha de vencimiento. Si así está bien, toca Confirmar otra vez', true); }
+  C.rAviso = false;
+  const c = C.rc ? C.compras[C.rc] : null, b = $('#r_btn');
+  const args = { p_id: nuevoId(), p_compra: c ? c.id : null, p_proveedor: c ? null : ($('#r_prov') || {}).value || null, p_documento: $('#r_doc').value.trim() || null,
+    p_items: items.map(l => ({ producto_id: l.producto_id, esperada: l.esperada, bien: +l.bien, danada: +l.danada, lote: l.lote || null, vence: l.vence || null })), p_obs: $('#r_obs').value.trim() || null };
+  b.disabled = true; b.textContent = 'Guardando…';
+  const r = c && c._pend ? { error: { message: 'Failed to fetch' } } : await rpcX('registrar_recepcion', { ...args, p_autor: ME.id });
+  if (r.error && !esRed(r.error)) { toast(faltaScript(r.error, '010') || friendly(r.error), true); b.disabled = false; b.textContent = '✓ Confirmar recepción'; return; }
+  if (r.error) { colaSet([...colaGet(), { id: args.p_id, dueno: ME.id, tipo: 'recepcion', args }]); toast('📵 Sin señal: la recepción quedó guardada y se suma sola'); syncCola(); }
+  else toast('Recepción guardada: ' + items.reduce((a, l) => a + +l.bien, 0) + ' unidades al inventario');
+  ['dpd_compras','dpd_recs','dpd_stock','dpd_venc'].forEach(k => lsDel(uk(k)));
+  C.rlin = null; C.rc = null; go('recibir');
+}
+// ---------- Compras ----------
+V.compras = async () => {
+  const puede = ['administrador','bodega'].includes(ROLE);
+  const compras = await cached('dpd_compras', LD.compras);
+  const pend = colaGet().filter(x => x.tipo === 'compra');
+  C.cmp = Object.fromEntries(compras.map(c => [c.id, c]));
+  return `<div class="row"><h2>Compras</h2>${puede ? '<button class="btn sm" onclick="C.nc=null;go(\'compra_nueva\')">＋ Pedido de compra</button>' : ''}</div>
+  <div class="note">El pedido que se le hace a Yemapan u otro proveedor. Cuando llegue la mercancía se recibe en <b>Recibir</b> contra este pedido.</div>
+  ${ROLE === 'administrador' ? '<button class="btn sm sec" style="margin:8px 0" onclick="verProveedores()">🏭 Proveedores</button>' : ''}
+  ${pend.map(x => `<div class="card" style="border:2px dashed #D9486A"><div class="row"><b>Compra sin enviar</b><span class="badge b-pend">📵 Por enviar</span></div><div class="mut">${esc(x.prov || '')} · ${x.args.p_items.length} productos</div>
+    ${x.error ? `<div class="note warnnote">⚠️ ${esc(x.error)}</div><button class="btn sm sec" onclick="quitarPend('${x.id}')">Quitar</button>` : ''}</div>`).join('')}
+  ${compras.map((c, i) => `<div class="card" ${dl(i)}><div class="row"><b class="serif" style="font-size:17px">Compra C-${c.numero}</b>${badgeCompra(c.estado)}</div>
+   <div class="mut">${esc(c.proveedores?.nombre || '')} · ${fdate(c.fecha)} · ${c.compra_items.length} productos · ${c.compra_items.reduce((a, x) => a + +x.cantidad, 0)} unidades</div>
+   ${c.observaciones ? `<div class="mut">${esc(c.observaciones)}</div>` : ''}
+   <div class="acts"><a class="btn sm sec" style="text-decoration:none" href="https://wa.me/?text=${encodeURIComponent(textoCompra(c))}" target="_blank" rel="noopener">📲 WhatsApp</a>
+   ${puede && c.estado === 'enviada' ? `<button class="btn sm sec" onclick="C.nc='${c.id}';go('compra_nueva')">✏️ Corregir</button><button class="btn sm sec" onclick="anularCompra('${c.id}')">Anular</button>` : ''}
+   ${puede && ['enviada','recibida_parcial'].includes(c.estado) ? `<button class="btn sm okb" onclick="C.compras={...(C.compras||{}),'${c.id}':C.cmp['${c.id}']};C.rc='${c.id}';go('recepcion')">📦 Recibir</button>` : ''}</div></div>`).join('') || (pend.length ? '' : '<div class="empty"><span class="e">🧾</span>Aún no hay pedidos de compra</div>')}`;
+};
+async function verProveedores() {
+  const ps = await cached('dpd_provs', LD.provs).catch(() => []);
+  sheet(`<h2>🏭 Proveedores</h2><div class="card">${ps.map(p => `<div class="li"><div class="pn"><b>${esc(p.nombre)}</b><span>${[p.nit ? 'NIT ' + esc(p.nit) : '', p.contacto ? esc(p.contacto) : '', p.telefono ? '📞 ' + esc(p.telefono) : ''].filter(Boolean).join(' · ') || '—'}${p.activo ? '' : ' · inactivo'}</span></div><button class="btn sm sec" onclick="formProveedor('${p.id}')">✏️</button></div>`).join('')}</div>
+  <button class="btn" onclick="formProveedor()">＋ Nuevo proveedor</button>`);
+  C.provs = Object.fromEntries(ps.map(p => [p.id, p]));
+}
+function formProveedor(id) {
+  const p = id ? C.provs[id] : {}, v = k => esc(p[k] || '');
+  sheet(`<h2>${id ? 'Modificar proveedor' : 'Nuevo proveedor'}</h2><label>Nombre</label><input id="pv_n" value="${v('nombre')}"><label>NIT</label><input id="pv_nit" value="${v('nit')}" inputmode="numeric">
+  <label>Contacto</label><input id="pv_c" value="${v('contacto')}"><label>Teléfono</label><input id="pv_t" value="${v('telefono')}" inputmode="tel">
+  ${id ? `<label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="pv_a" style="width:auto" ${p.activo ? 'checked' : ''}> Activo</label>` : ''}
+  <div style="height:14px"></div><button class="btn" onclick="guardarProveedor('${id || ''}')">Guardar</button>`);
+}
+async function guardarProveedor(id) {
+  const d = { nombre: $('#pv_n').value.trim(), nit: $('#pv_nit').value.trim(), contacto: $('#pv_c').value.trim(), telefono: $('#pv_t').value.trim(), activo: $('#pv_a') ? $('#pv_a').checked : true };
+  if (!d.nombre) return toast('Escribe el nombre', true);
+  const r = await rpcX('guardar_proveedor', { p_id: id || nuevoId(), p_datos: d });
+  if (r.error) return toast(esRed(r.error) ? 'Sin señal: los proveedores se guardan con internet' : faltaScript(r.error, '010') || friendly(r.error), true);
+  lsDel(uk('dpd_provs')); toast('Proveedor guardado'); verProveedores();
+}
+function textoCompra(c) {
+  const e = EMP();
+  return `Pedido de compra ${c.numero ? 'C-' + c.numero : ''} · ${e.razon_social || BRAND}${e.nit ? ' NIT ' + e.nit : ''}\nProveedor: ${(c.proveedores && c.proveedores.nombre) || c.prov || ''}\nFecha: ${new Date(c.fecha || Date.now()).toLocaleDateString('es-CO')}\n\n` +
+    c.compra_items.map(i => { const p = P(i.producto_id); return `${+i.cantidad} x ${p.codigo ? p.codigo + ' ' : ''}${nice(p.nombre || '')}`; }).join('\n') + (c.observaciones ? '\n\n' + c.observaciones : '');
+}
+function anularCompra(id) {
+  sheet(`<h2>¿Anular la compra C-${C.cmp[id].numero}?</h2><div class="mut">Solo se puede si todavía no ha llegado nada de este pedido.</div>
+  <div class="grid2"><button class="btn sec" onclick="closeSheet()">No</button><button class="btn" onclick="anularCompraOk('${id}')">Sí, anular</button></div>`);
+}
+async function anularCompraOk(id) {
+  const r = await rpcX('anular_compra', { p_id: id }); closeSheet();
+  if (r.error) return toast(esRed(r.error) ? 'Sin señal: anular se hace con internet' : friendly(r.error), true);
+  lsDel(uk('dpd_compras')); toast('Compra anulada'); refresh();
+}
+V.compra_nueva = async () => {
+  if (!['administrador','bodega'].includes(ROLE)) return '<div class="empty"><span class="e">🔒</span>Solo bodega y administración hacen pedidos de compra.</div>';
+  const provs = (await cached('dpd_provs', LD.provs)).filter(p => p.activo), ed = C.nc ? (C.cmp || {})[C.nc] : null;
+  if (!C.ncant || C.ncDe !== (C.nc || 'nueva')) { C.ncDe = C.nc || 'nueva'; C.ncant = ed ? Object.fromEntries(ed.compra_items.map(i => [i.producto_id, +i.cantidad])) : {}; C.sug = null; }
+  sub.cq = sub.cq || '';
+  return `<div class="row"><h2>${ed ? 'Corregir compra C-' + ed.numero : 'Pedido de compra'}</h2><button class="btn sm sec" onclick="go('compras')">← Volver</button></div>
+  <div class="card"><label style="margin-top:0">Proveedor</label><select id="n_prov">${provs.map(p => `<option value="${p.id}" ${ed && ed.proveedor_id === p.id ? 'selected' : ''}>${esc(p.nombre)}</option>`).join('')}</select>
+  <button class="btn sec" style="margin-top:12px" onclick="llenarSugerido()">✨ Llenar con el sugerido (7 días)</button>
+  <div class="mut" style="margin-top:6px">Sugerido = lo vendido en las últimas 2 semanas para 7 días + pedidos aprobados por despachar − lo que hay en bodega.</div></div>
+  <div class="search fijo"><span class="si">🔎</span><input placeholder="Buscar producto…" value="${esc(sub.cq)}" oninput="sub.cq=this.value;$('#n_lista').innerHTML=listaCompraHTML()"></div>
+  <div id="n_lista">${listaCompraHTML()}</div>
+  <label>Observaciones</label><input id="n_obs" value="${esc(ed && ed.observaciones || '')}" placeholder="Opcional">
+  <div style="height:14px"></div><button class="btn" id="n_btn" onclick="guardarCompra()">✓ Guardar pedido de compra</button>`;
+};
+function listaCompraHTML() {
+  const qq = (sub.cq || '').toLowerCase(), n = Object.values(C.ncant).filter(x => x > 0).length;
+  return `<div class="mut" style="margin:8px 0">${n} productos en el pedido</div><div class="card">${CAT.filter(p => !qq || p.nombre.toLowerCase().includes(qq) || (p.codigo || '').toLowerCase().includes(qq)).map(p => {
+    const s = C.sug && C.sug[p.id];
+    return `<div class="li"><div class="pn"><b>${nm(p)}</b><span>${p.codigo || ''}${s ? ` · hay ${+s.existencias} · vendió ${+s.vendido_14d} en 14 días` : ''}</span></div>
+    <input type="number" inputmode="numeric" min="0" style="width:84px;text-align:center" value="${C.ncant[p.id] || ''}" placeholder="0" onchange="C.ncant['${p.id}']=+this.value||0"></div>`; }).join('')}</div>`;
+}
+async function llenarSugerido() {
+  let d; try { d = await q(sb.rpc('sugerido_compra', { p_dias: 7 })); } catch (e) { return toast(esRed(e) ? 'Sin señal: el sugerido se calcula con internet' : faltaScript(e, '010') || friendly(e), true); }
+  C.sug = Object.fromEntries(d.map(x => [x.producto_id, x]));
+  let n = 0; d.forEach(x => { if (+x.sugerido > 0) { C.ncant[x.producto_id] = +x.sugerido; n++; } });
+  $('#n_lista').innerHTML = listaCompraHTML(); toast(n ? 'Sugerido: ' + n + ' productos. Revisa y ajusta' : 'Con lo que hay en bodega no hace falta pedir');
+}
+async function guardarCompra() {
+  const items = Object.entries(C.ncant).filter(([, n]) => n > 0).map(([producto_id, cantidad]) => ({ producto_id, cantidad }));
+  if (!items.length) return toast('Escribe la cantidad de al menos un producto', true);
+  const sel = $('#n_prov'), b = $('#n_btn');
+  const args = { p_id: C.nc || nuevoId(), p_proveedor: sel.value, p_items: items, p_obs: $('#n_obs').value.trim() || null };
+  b.disabled = true; b.textContent = 'Guardando…';
+  const r = await rpcX('guardar_compra', { ...args, p_autor: ME.id });
+  if (r.error && !esRed(r.error)) { toast(faltaScript(r.error, '010') || friendly(r.error), true); b.disabled = false; b.textContent = '✓ Guardar pedido de compra'; return; }
+  const prov = sel.options[sel.selectedIndex].text;
+  if (r.error) { colaSet([...colaGet().filter(x => x.id !== args.p_id), { id: args.p_id, dueno: ME.id, tipo: 'compra', args, prov, fecha: new Date().toISOString() }]); toast('📵 Sin señal: el pedido de compra quedó guardado'); }
+  const c = { numero: r.data && r.data[0] ? r.data[0].numero : null, prov, fecha: new Date().toISOString(), compra_items: items, observaciones: args.p_obs };
+  lsDel(uk('dpd_compras')); C.ncant = null; C.nc = null;
+  await go('compras');
+  sheet(`<h2>✓ Pedido de compra ${c.numero ? 'C-' + c.numero : 'guardado'}</h2><div class="mut">${items.length} productos · ${items.reduce((a, i) => a + i.cantidad, 0)} unidades para ${esc(prov)}</div>
+  <a class="btn" style="text-decoration:none;margin-top:14px" href="https://wa.me/?text=${encodeURIComponent(textoCompra(c))}" target="_blank" rel="noopener">📲 Enviar por WhatsApp</a>
+  <div style="height:10px"></div><button class="btn sec" onclick="closeSheet()">Listo</button>`);
+}
+// Kardex de un producto
+async function verKardex(pid) {
+  const p = P(pid);
+  sheet(`<h2>${nm(p)}</h2><div class="mut">Kardex de los últimos 30 días</div><div id="kx"><div class="empty"><span class="e spin">🥖</span>Cargando…</div></div>`);
+  let d; try { d = await q(sb.rpc('kardex', { p_producto: pid })); }
+  catch (e) { $('#kx').innerHTML = `<div class="note warnnote">${esRed(e) ? '📵 Sin señal: el kardex se consulta con internet.' : esc(faltaScript(e, '010') || friendly(e))}</div>`; return; }
+  const nombre = { saldo_inicial: 'Saldo inicial', entrada: 'Entrada', salida_venta: 'Salida', ajuste_positivo: 'Ajuste +', ajuste_negativo: 'Ajuste −', devolucion_stock: 'Devolución', baja_averia: 'Avería', traslado_salida: 'Traslado sale', traslado_entrada: 'Traslado entra' };
+  $('#kx').innerHTML = `<div class="card" style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px"><tr style="text-align:left"><th>Fecha</th><th>Movimiento</th><th style="text-align:right">Entra</th><th style="text-align:right">Sale</th><th style="text-align:right">Saldo</th></tr>
+  ${d.map(x => `<tr style="border-top:1px solid var(--line)"><td>${x.fecha ? new Date(x.fecha).toLocaleDateString('es-CO', { day: 'numeric', month: 'short' }) : ''}</td><td><b>${nombre[x.tipo] || esc(x.tipo)}</b><br><span class="mut">${esc(x.detalle || '')}</span></td>
+  <td style="text-align:right">${x.entra != null ? +x.entra : ''}</td><td style="text-align:right">${x.sale != null ? +x.sale : ''}</td><td style="text-align:right"><b>${+x.saldo}</b></td></tr>`).join('')}</table></div>
+  <button class="btn sec" onclick="closeSheet()">Cerrar</button>`;
+}
 async function recibir() {
   const n = +$('#rq').value; if (!(n > 0)) return toast('Escribe una cantidad', true);
   const id = nuevoId(), args = { p_id: id, p_producto: $('#rp').value, p_cantidad: n, p_nota: $('#rd').value || null };
@@ -799,9 +972,13 @@ V.inventario = async () => {
   const st = await cached('dpd_stock', LD.stock);
   const by = {}; st.forEach(s => by[s.producto_id] = (by[s.producto_id] || 0) + +s.cantidad);
   sub.inv = sub.inv || 'bajo';
+  const venc = await cached('dpd_venc', LD.venc).catch(() => null);
   const l = CAT.filter(p => sub.inv === 'todo' || (by[p.id] || 0) < 10); const mx = Math.max(1, ...Object.values(by));
-  return `<h2>Inventario</h2><div class="seg"><button class="${sub.inv === 'bajo' ? 'on' : ''}" onclick="sub.inv='bajo';refresh()">⚠️ Por agotarse (${CAT.filter(p => (by[p.id] || 0) < 10).length})</button><button class="${sub.inv === 'todo' ? 'on' : ''}" onclick="sub.inv='todo';refresh()">📦 Todo</button></div>
-  <div class="card">${l.map(p => { const s = by[p.id] || 0; return `<div class="li">${pArtP(p)}<div class="pn"><b>${nm(p)}</b><div class="bar"><i style="width:${Math.max(3, s / mx * 100)}%;${s < 10 ? 'background:linear-gradient(90deg,#E0603F,#B3321E)' : ''}"></i></div></div><span class="badge ${s < 10 ? 'b-bad' : 'b-ok'}">${s}</span></div>`; }).join('')}</div>`;
+  const kx = ['administrador','gerencia','bodega'].includes(ROLE);
+  return `<h2>Inventario</h2><div class="seg"><button class="${sub.inv === 'bajo' ? 'on' : ''}" onclick="sub.inv='bajo';refresh()">⚠️ Por agotarse (${CAT.filter(p => (by[p.id] || 0) < 10).length})</button><button class="${sub.inv === 'todo' ? 'on' : ''}" onclick="sub.inv='todo';refresh()">📦 Todo</button>${venc ? `<button class="${sub.inv === 'venc' ? 'on' : ''}" onclick="sub.inv='venc';refresh()">⏰ Por vencer (${venc.length})</button>` : ''}</div>
+  ${kx ? '<div class="mut" style="margin:6px 0">Toca un producto para ver su kardex.</div>' : ''}
+  ${sub.inv === 'venc' ? `<div class="note">Vencen en los próximos 7 días. Se calcula suponiendo que sale primero lo que vence primero.</div><div class="card">${(venc || []).map(v => `<div class="li" style="cursor:pointer" onclick="verKardex('${v.producto_id}')">${pArtP(P(v.producto_id))}<div class="pn"><b>${nm(P(v.producto_id))}</b><span>Lote ${esc(v.codigo_lote)} · ${v.dias < 0 ? '<b style="color:var(--bad)">vencido hace ' + (-v.dias) + ' días</b>' : v.dias === 0 ? '<b style="color:var(--bad)">vence hoy</b>' : 'vence en ' + v.dias + (v.dias === 1 ? ' día' : ' días')}</span></div><span class="badge ${v.dias <= 2 ? 'b-bad' : 'b-pend'}">${+v.cantidad}</span></div>`).join('') || '<div class="mut">Nada por vencer en los próximos 7 días 🎉</div>'}</div>` : `
+  <div class="card">${l.map(p => { const s = by[p.id] || 0; return `<div class="li" ${kx ? `style="cursor:pointer" onclick="verKardex('${p.id}')"` : ''}>${pArtP(p)}<div class="pn"><b>${nm(p)}</b><div class="bar"><i style="width:${Math.max(3, s / mx * 100)}%;${s < 10 ? 'background:linear-gradient(90deg,#E0603F,#B3321E)' : ''}"></i></div></div><span class="badge ${s < 10 ? 'b-bad' : 'b-ok'}">${s}</span></div>`; }).join('')}</div>`}`;
 };
 V.empresa = async () => {
   if (ROLE !== 'administrador') return '<div class="empty"><span class="e">🔒</span>Solo la administración cambia los datos de la empresa.</div>';
@@ -846,6 +1023,7 @@ V.resumen = async () => {
   <div class="kpi" style="background:linear-gradient(135deg,#D58A12,#F2BB45)"><div class="k">Clientes</div><div class="v">${nCli ?? 0}</div><span class="ke">👥</span></div>
   <div class="kpi" style="background:linear-gradient(135deg,#B3321E,#E0603F)"><div class="k">Productos activos</div><div class="v">${CAT.length}</div><span class="ke">🥖</span></div></div>
   <h3>Ventas por línea (pedidos)</h3><div class="card chart">${ent.map(([l, v], i) => `<div class="cb"><span class="lab">${esc(l)}</span><div class="tr"><i style="width:${v / mx * 100}%;background:${COL[i % COL.length]}"></i></div><span class="vv">${fmt(v)}</span></div>`).join('') || '<div class="mut">Aún no hay pedidos.</div>'}</div>
+  <div class="grid2" style="margin-top:14px">${[['compras','🧾','Compras'],['recibir','🚛','Recibir'],['inventario','📊','Inventario'],['alistar','📦','Alistar']].filter(x => ROLE === 'administrador' || ['compras','inventario'].includes(x[0])).map(([k, i, n]) => `<button class="btn sec" onclick="go('${k}')">${i} ${n}</button>`).join('')}</div>
   ${ROLE === 'administrador' ? `<button class="card" style="width:100%;border:0;text-align:left;cursor:pointer;font:inherit;margin-top:14px" onclick="go('empresa')"><div class="row"><div><b>🏢 Datos de la empresa</b><div class="mut">${EMP().nit ? 'NIT ' + esc(EMP().nit) + ' · ' : ''}Nombre, NIT, dirección y teléfono de la tirilla</div></div><span style="font-size:22px">›</span></div></button>` : ''}
   <div class="note">Cartera, facturación con Siigo y rutas llegan en las siguientes fases.</div>`;
 };
