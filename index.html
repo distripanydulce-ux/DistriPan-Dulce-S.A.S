@@ -181,6 +181,11 @@ nav.tabs .dot{position:absolute;top:0;right:calc(50% - 22px);background:var(--ba
 .pc .art img{object-fit:contain;background:#fff}
 .th img{object-fit:contain;background:#fff}
 
+/* Etapa 2: buscador fijo arriba mientras se baja por el catálogo */
+.phone{overflow-x:hidden;overflow-x:clip}
+.search.fijo{position:sticky;top:8px;z-index:30}
+.search.fijo input{box-shadow:0 6px 18px rgba(46,28,18,.16)}
+
 /* Marca DistriPan & Dulce: café #2E1C12, dorado #F2B544/#E0A030, rosado #F48FA8/#D9486A */
 :root{--terra:#D9486A;--terra2:#A8324F;--crust:#E0A030;--honey:#F2B544}
 header{background:linear-gradient(140deg,#2E1C12 0%,#3F2719 55%,#5A3820 100%)}
@@ -425,7 +430,8 @@ function showLogin(msg) {
    <img src="${LOGO_CLARO}" alt="${BRAND}" style="width:100%;max-width:320px;display:block;margin:0 auto 10px"><div class="mut" style="margin-bottom:18px;text-align:center">Entra con el usuario que te dio la administración</div>
    ${msg ? `<div class="note warnnote">${esc(msg)}</div>` : ''}
    <form onsubmit="event.preventDefault();login()"><label>Correo</label><input id="em" type="email" autocomplete="username" required>
-   <label>Contraseña</label><input id="pw" type="password" autocomplete="current-password" required>
+   <label>Contraseña</label><div style="position:relative"><input id="pw" type="password" autocomplete="current-password" required style="padding-right:56px">
+   <button type="button" aria-label="Mostrar contraseña" onclick="const i=$('#pw');i.type=i.type==='password'?'text':'password';this.textContent=i.type==='password'?'👁️':'🙈'" style="position:absolute;right:6px;top:50%;transform:translateY(-50%);border:0;background:none;font-size:22px;cursor:pointer;padding:8px">👁️</button></div>
    <div style="height:16px"></div><button class="btn" id="lb">Entrar</button></form>
    <div class="mut" style="margin-top:14px;text-align:center">¿Olvidaste tu contraseña? Pídele a la administración que te la cambie.</div></div></div>`;
 }
@@ -491,6 +497,7 @@ async function precargar() {
   const paso = async (k, f) => { if (sigue()) await cached(k, f).catch(() => {}); };
   SILENCIO++;
   try {
+    await paso('dpd_empresa', LD.empresa);
     if (['vendedor','administrador','gerencia'].includes(ROLE)) {
       const clis = await cached('dpd_clis', leerClientes).catch(() => []);
       C.clis = { ...(C.clis || {}), ...Object.fromEntries(clis.map(c => [c.id, c])) };
@@ -515,7 +522,9 @@ async function precargar() {
   } finally { SILENCIO--; }
 }
 // Consultas que se guardan en el celular (mismo nombre en la pantalla y en la precarga)
+const EMP = () => lsGet(uk('dpd_empresa')) || {};
 const LD = {
+  empresa: async () => { const r = await sb.from('empresa').select('*').eq('id', 1).maybeSingle(); if (r.error) throw r.error; return r.data || {}; },
   listas: () => q(sb.from('listas_precio').select('id,nombre').order('nombre')),
   rutas: () => q(sb.from('rutas').select('id,nombre').order('nombre')),
   vends: () => q(sb.from('vendedores').select('perfil_id,perfiles(nombre)')),
@@ -549,7 +558,7 @@ async function go(t) {
   $('#view').innerHTML = '<div class="empty"><span class="e spin">🥖</span>Cargando…</div>';
   renderCart();
   try { $('#view').innerHTML = await (V[tab] || (async () => ''))(); }
-  catch (e) { $('#view').innerHTML = `<div class="empty"><span class="e">${esRed(e) ? '📵' : '⚠️'}</span>${esRed(e) ? (['usuarios','precios'].includes(t) ? 'Esta pantalla necesita señal (crear usuarios, precios y fotos se hacen con internet).' : 'Sin señal, y esta pantalla aún no está guardada en el celular. Ábrela una vez con señal y después funcionará sin señal.') : esc(friendly(e))}<br><br><button class="btn sm sec" onclick="go(tab)">Reintentar</button></div>`; }
+  catch (e) { $('#view').innerHTML = `<div class="empty"><span class="e">${esRed(e) ? '📵' : '⚠️'}</span>${esRed(e) ? (['usuarios','precios','empresa'].includes(t) ? 'Esta pantalla necesita señal (usuarios, precios, fotos y datos de la empresa se cambian con internet).' : 'Sin señal, y esta pantalla aún no está guardada en el celular. Ábrela una vez con señal y después funcionará sin señal.') : esc(friendly(e))}<br><br><button class="btn sm sec" onclick="go(tab)">Reintentar</button></div>`; }
   renderCart();
 }
 const refresh = () => go(tab);
@@ -577,7 +586,7 @@ async function loadCatalog(cliente, soloGuardar) {
 }
 function catalogHTML() {
   const lines = ['Todas', ...new Set(C.cat.map(p => p.linea))];
-  return `<div class="search"><span class="si">🔎</span><input placeholder="Buscar pan, torta, galleta…" value="${esc(filt.q)}" oninput="filt.q=this.value;upd()"></div>
+  return `<div class="search fijo"><span class="si">🔎</span><input placeholder="Buscar pan, torta, galleta…" value="${esc(filt.q)}" oninput="filt.q=this.value;upd()"></div>
   <div class="cats">${lines.map(l => l === 'Todas' ? `<button class="cat ${l === filt.l ? 'on' : ''}" onclick="filt.l='Todas';rcat()"><span class="ci" style="background:#FCE4EA;font-size:22px">✨</span><span>Todas</span></button>` :
    `<button class="cat ${l === filt.l ? 'on' : ''}" onclick="filt.l='${esc(l)}';rcat()"><span class="ci" style="background:${KBG[LK[l]] || '#FBE7C6'}">${svg(LK[l] || 'loaf')}</span><span>${esc(l)}</span></button>`).join('')}</div>
   <div class="pgrid" id="plist">${plist()}</div>`;
@@ -794,6 +803,33 @@ V.inventario = async () => {
   return `<h2>Inventario</h2><div class="seg"><button class="${sub.inv === 'bajo' ? 'on' : ''}" onclick="sub.inv='bajo';refresh()">⚠️ Por agotarse (${CAT.filter(p => (by[p.id] || 0) < 10).length})</button><button class="${sub.inv === 'todo' ? 'on' : ''}" onclick="sub.inv='todo';refresh()">📦 Todo</button></div>
   <div class="card">${l.map(p => { const s = by[p.id] || 0; return `<div class="li">${pArtP(p)}<div class="pn"><b>${nm(p)}</b><div class="bar"><i style="width:${Math.max(3, s / mx * 100)}%;${s < 10 ? 'background:linear-gradient(90deg,#E0603F,#B3321E)' : ''}"></i></div></div><span class="badge ${s < 10 ? 'b-bad' : 'b-ok'}">${s}</span></div>`; }).join('')}</div>`;
 };
+V.empresa = async () => {
+  if (ROLE !== 'administrador') return '<div class="empty"><span class="e">🔒</span>Solo la administración cambia los datos de la empresa.</div>';
+  let e; try { e = await LD.empresa(); lsSet(uk('dpd_empresa'), e); }
+  catch (er) { if (esRed(er)) throw er; return `<div class="note warnnote">⚠️ ${/empresa/i.test(er.message || '') ? 'Falta correr el script 009 en Supabase.' : esc(friendly(er))}</div>`; }
+  const f = (id, l, k, extra = '') => `<label>${l}</label><input id="${id}" value="${esc(e[k] ?? '')}" ${extra}>`;
+  return `<div class="row"><h2>🏢 Datos de la empresa</h2><button class="btn sm sec" onclick="go('resumen')">← Volver</button></div>
+  <div class="note">Salen en la tirilla de venta y, más adelante, en las facturas.</div>
+  <div class="card">${f('e_rs', 'Razón social', 'razon_social', 'required')}
+  <div class="row" style="gap:8px"><div style="flex:1">${f('e_nit', 'NIT (sin dígito)', 'nit', 'inputmode="numeric" oninput="this.value=this.value.replace(/\\D/g,\'\');$(\'#e_dv\').value=dvNIT(this.value)"')}</div><div style="width:90px">${f('e_dv', 'DV', 'digito_verificacion', 'maxlength="1" inputmode="numeric"')}</div></div>
+  ${f('e_dir', 'Dirección', 'direccion')}<div class="grid2"><div>${f('e_mun', 'Municipio', 'municipio')}</div><div>${f('e_dep', 'Departamento', 'departamento')}</div></div>
+  <div class="grid2"><div>${f('e_tel', 'Teléfono', 'telefono', 'inputmode="tel"')}</div><div>${f('e_cor', 'Correo', 'correo', 'type="email"')}</div></div>
+  ${f('e_msg', 'Mensaje al pie de la tirilla', 'mensaje_tirilla', 'placeholder="¡Gracias por su compra!"')}
+  <div style="height:14px"></div><button class="btn" id="e_btn" onclick="guardarEmpresa()">Guardar</button></div>
+  <h3>Así se ve la tirilla</h3><div class="card" id="e_prev">${ticketHTML({ fecha: new Date().toISOString(), numero: 123, vendedor: ME.nombre, medio: 'efectivo', modalidad: 'tirilla_contado', total: 9600, lineas: [{ nombre: 'Pan tajado 550 gr', n: 2, precio: 4800 }] }).replace('id="printarea"', '')}</div>`;
+};
+async function guardarEmpresa() {
+  const v = id => $('#' + id).value.trim(), b = $('#e_btn');
+  if (!v('e_rs')) return toast('Escribe la razón social', true);
+  b.disabled = true; b.textContent = 'Guardando…';
+  const datos = { razon_social: v('e_rs'), nit: v('e_nit') || null, digito_verificacion: v('e_dv') || null, direccion: v('e_dir') || null,
+    municipio: v('e_mun') || 'Yopal', departamento: v('e_dep') || 'Casanare', telefono: v('e_tel') || null, correo: v('e_cor') || null, mensaje_tirilla: v('e_msg') || null };
+  let r; try { r = await sb.from('empresa').update(datos).eq('id', 1).select('*').maybeSingle(); } catch (e) { r = { error: e }; }
+  b.disabled = false; b.textContent = 'Guardar';
+  if (r.error) return toast(esRed(r.error) ? 'Sin señal: los datos de la empresa se guardan con internet' : friendly(r.error), true);
+  if (!r.data) return toast('No tienes permiso para cambiar estos datos', true);
+  lsSet(uk('dpd_empresa'), r.data); toast('Datos de la empresa guardados'); refresh();
+}
 V.resumen = async () => {
   const peds = await cached('dpd_peds_resumen', () => loadPedidos());
   C.ped = { ...(C.ped || {}), ...Object.fromEntries(peds.map(p => [p.id, p])) };
@@ -810,6 +846,7 @@ V.resumen = async () => {
   <div class="kpi" style="background:linear-gradient(135deg,#D58A12,#F2BB45)"><div class="k">Clientes</div><div class="v">${nCli ?? 0}</div><span class="ke">👥</span></div>
   <div class="kpi" style="background:linear-gradient(135deg,#B3321E,#E0603F)"><div class="k">Productos activos</div><div class="v">${CAT.length}</div><span class="ke">🥖</span></div></div>
   <h3>Ventas por línea (pedidos)</h3><div class="card chart">${ent.map(([l, v], i) => `<div class="cb"><span class="lab">${esc(l)}</span><div class="tr"><i style="width:${v / mx * 100}%;background:${COL[i % COL.length]}"></i></div><span class="vv">${fmt(v)}</span></div>`).join('') || '<div class="mut">Aún no hay pedidos.</div>'}</div>
+  ${ROLE === 'administrador' ? `<button class="card" style="width:100%;border:0;text-align:left;cursor:pointer;font:inherit;margin-top:14px" onclick="go('empresa')"><div class="row"><div><b>🏢 Datos de la empresa</b><div class="mut">${EMP().nit ? 'NIT ' + esc(EMP().nit) + ' · ' : ''}Nombre, NIT, dirección y teléfono de la tirilla</div></div><span style="font-size:22px">›</span></div></button>` : ''}
   <div class="note">Cartera, facturación con Siigo y rutas llegan en las siguientes fases.</div>`;
 };
 V.precios = async () => {
@@ -830,7 +867,7 @@ V.precios = async () => {
   <div class="note">📷 Toca la imagen para cambiar la foto · ✏️ escribe el precio y toca fuera para guardarlo · ⚙️ edita o elimina el producto.</div>` : ''}
   <div class="note">🔒 Solo administración y gerencia ven esta pantalla. Vendedores y clientes nunca reciben el costo.</div>
   <div class="seg">${[['activos','A la venta (' + todos.filter(p => p.activo).length + ')'],['ocultos','Ocultos (' + todos.filter(p => !p.activo).length + ')'],['todos','Todos']].map(([k, n]) => `<button class="${sub.vis === k ? 'on' : ''}" onclick="sub.vis='${k}';refresh()">${n}</button>`).join('')}</div>
-  <div class="search"><span class="si">🔎</span><input placeholder="Buscar producto…" value="${esc(sub.pq || '')}" oninput="sub.pq=this.value;filtrarPrecios()"></div>
+  <div class="search fijo"><span class="si">🔎</span><input placeholder="Buscar producto…" value="${esc(sub.pq || '')}" oninput="sub.pq=this.value;filtrarPrecios()"></div>
   <div class="card" id="plprec">${lista.map(p => { const r = mBy[p.id] || {}; const pc = +r.margen_pct;
    return `<div class="li" data-n="${esc((p.nombre + ' ' + p.codigo).toLowerCase())}" ${p.activo ? '' : 'style="opacity:.55"'}>${edit ? fotoCtl(p.id) : pArtP(p)}
    <div class="pn"><b>${esc(nice(p.nombre))}</b><span>${esc(p.codigo)} · ${esc(p.linea)}${p.activo ? '' : ' · <b style="color:var(--bad)">oculto</b>'}</span>
@@ -978,8 +1015,23 @@ function verCliente(id) {
   sheet(`<h2>${esc(c.razon_social)}</h2>${c.nombre_comercial ? `<div class="mut">${esc(c.nombre_comercial)}</div>` : ''}
   <div class="card" style="margin-top:10px">${F('Documento', `${c.tipo_documento} ${c.numero_documento}${c.digito_verificacion ? '-' + c.digito_verificacion : ''}`)}${F('Teléfono', c.telefono)}${F('Correo de facturación', c.email_facturacion)}${F('Dirección', c.direccion)}${F('Municipio', c.municipio)}
   ${F('Ruta', c.rutas?.nombre || '')}${F('Lista de precios', c.listas_precio?.nombre || '')}${F('Cupo y plazo', fmt(c.cupo) + ' · ' + (c.plazo_dias ? c.plazo_dias + ' días' : 'contado'))}</div>
+  ${c.activo === false ? '<div class="note warnnote">🚫 Cliente inactivo: no aparece para vender. Su historia se conserva.</div>' : ''}
+  ${['administrador','gerencia'].includes(ROLE) ? `<button class="btn sec" style="margin-bottom:10px" onclick="activarCliente('${id}',${c.activo === false})">${c.activo === false ? '✅ Volver a activar' : '🚫 Desactivar cliente'}</button>` : ''}
   ${puedeModificar(c) ? `<div class="grid2"><button class="btn sec" onclick="closeSheet()">Cerrar</button><button class="btn" onclick="editarCliente('${id}')">✏️ Modificar</button></div>`
     : `<div class="note">${ROLE === 'vendedor' ? 'Solo quien creó este cliente o la administración pueden modificarlo.' : ''}</div><button class="btn sec" onclick="closeSheet()">Cerrar</button>`}`);
+}
+function activarCliente(id, on) {
+  if (!on) return sheet(`<h2>¿Desactivar ${esc(C.cv[id].razon_social)}?</h2><div class="mut">Deja de aparecer para vender y tomar pedidos. No se borra nada: sus ventas, pedidos y datos se conservan y lo puedes volver a activar cuando quieras.</div>
+    <div class="grid2"><button class="btn sec" onclick="closeSheet()">No</button><button class="btn" onclick="cambiarActivo('${id}',false)">Sí, desactivar</button></div>`);
+  cambiarActivo(id, true);
+}
+async function cambiarActivo(id, on) {
+  const r = await rpcX('actualizar_cliente', { p_id: id, p_datos: { activo: on }, p_autor: ME.id });
+  if (r.error && !esRed(r.error)) return toast(faltaScript(r.error, '008') || friendly(r.error), true);
+  closeSheet();
+  if (r.error) { colaSet([...colaGet(), { id: nuevoId(), dueno: ME.id, tipo: 'cliente_upd', args: { p_id: id, p_datos: { activo: on } } }]); toast('📵 Sin señal: el cambio se envía solo'); }
+  else { toast(on ? 'Cliente activado' : 'Cliente desactivado'); lsDel(uk('dpd_clis')); }
+  refresh();
 }
 function editarCliente(id) { abrirFormCliente(C.cv[id], 'editar'); }
 function editarPendiente(id) { const x = colaGet().find(y => y.id === id); if (x) abrirFormCliente({ ...x.args, id }, 'pendiente'); }
@@ -1172,6 +1224,8 @@ const MEDIOS = [['efectivo','💵 Efectivo'],['nequi','📱 Nequi'],['transferen
 const MEDIO_N = Object.fromEntries(MEDIOS.map(([k, v]) => [k, v.replace(/^\S+\s/, '')]));
 const segV = (id, opts, on) => `<div class="seg" id="${id}">${opts.map(([v, n]) => `<button type="button" data-v="${v}" class="${v === on ? 'on' : ''}" onclick="[...this.parentNode.children].forEach(b=>b.classList.remove('on'));this.classList.add('on');${id === 'vmod' ? 'modVenta()' : ''}">${n}</button>`).join('')}</div>`;
 V.contado = async () => {
+  const segC = `<div class="seg" style="margin-bottom:10px">${[['vender','💵 Vender'],['hist','📅 Historial']].map(([k, n]) => `<button class="${(sub.ct || 'vender') === k ? 'on' : ''}" onclick="sub.ct='${k}';refresh()">${n}</button>`).join('')}</div>`;
+  if (sub.ct === 'hist') return vistaHistorial(segC + '<h2>Mis ventas de contado</h2>');
   const clis = conPendientes(await cached('dpd_clis', leerClientes));
   C.clis = Object.fromEntries(clis.map(c => [c.id, c]));
   if (C.vcli && !C.clis[C.vcli]) C.vcli = '';
@@ -1187,7 +1241,7 @@ V.contado = async () => {
   const deHoy = Object.values(map).filter(t => new Date(t.fecha) >= ini).sort((a, b) => new Date(b.fecha) - new Date(a.fecha));
   C.tk = map;
   const tot = deHoy.reduce((a, t) => a + t.total, 0);
-  return `${ajenas ? `<div class="note">📱 En este celular hay ${ajenas} ${ajenas > 1 ? 'pendientes' : 'pendiente'} (ventas o pedidos) de otro usuario esperando a que esa persona vuelva a entrar.</div>` : ''}${cola.length ? `<div class="note warnnote">⏫ ${cola.length} ${cola.length > 1 ? 'ventas guardadas' : 'venta guardada'} en este celular sin enviar.${cola.some(x => x.error) ? '<br>⚠️ ' + cola.filter(x => x.error).map(x => esc(x.error)).join('<br>⚠️ ') : ''}<br><button class="btn sm" style="margin-top:8px" onclick="syncCola(true)">Enviar ahora</button></div>` : ''}
+  return `${segC}${ajenas ? `<div class="note">📱 En este celular hay ${ajenas} ${ajenas > 1 ? 'pendientes' : 'pendiente'} (ventas o pedidos) de otro usuario esperando a que esa persona vuelva a entrar.</div>` : ''}${cola.length ? `<div class="note warnnote">⏫ ${cola.length} ${cola.length > 1 ? 'ventas guardadas' : 'venta guardada'} en este celular sin enviar.${cola.some(x => x.error) ? '<br>⚠️ ' + cola.filter(x => x.error).map(x => esc(x.error)).join('<br>⚠️ ') : ''}<br><button class="btn sm" style="margin-top:8px" onclick="syncCola(true)">Enviar ahora</button></div>` : ''}
   <h2>Venta de contado</h2>
   <div class="hero"><div style="flex:1"><div class="lbl">Vendido hoy</div><div class="val">${fmt(tot)}</div><div style="font-size:13px;opacity:.8;font-weight:700">${deHoy.length} ${deHoy.length === 1 ? 'venta' : 'ventas'}</div></div><div style="font-size:42px">💵</div></div>
   <div class="card"><label style="margin-top:0">Cliente</label><select onchange="C.vcli=this.value;cart={};refresh()"><option value="">🧍 Consumidor final</option>${clis.map(c => `<option value="${c.id}" ${C.vcli === c.id ? 'selected' : ''}>${esc(c.razon_social)}</option>`).join('')}</select>
@@ -1245,33 +1299,66 @@ async function registrarVenta() {
 function ticketHTML(t) {
   const L = (a, b) => `<div class="tl"><span>${a}</span><span>${b}</span></div>`;
   const f = new Date(t.fecha);
-  return `<div id="printarea" class="tirilla"><img src="${LOGO_CLARO}" alt="${BRAND}"><div class="c">Yopal, Casanare</div><hr>
+  const e = EMP(), nit = e.nit ? 'NIT ' + e.nit + (e.digito_verificacion ? '-' + e.digito_verificacion : '') : '';
+  return `<div id="printarea" class="tirilla"><img src="${LOGO_CLARO}" alt="${BRAND}"><div class="c">${e.razon_social && e.razon_social !== BRAND ? `<b>${esc(e.razon_social)}</b><br>` : ''}${nit ? esc(nit) + '<br>' : ''}${e.direccion ? esc(e.direccion) + '<br>' : ''}${esc(e.municipio || 'Yopal')}, ${esc(e.departamento || 'Casanare')}${e.telefono ? '<br>Tel. ' + esc(e.telefono) : ''}${e.correo ? '<br>' + esc(e.correo) : ''}</div><hr>
   <div class="c"><b>COMPROBANTE DE VENTA</b><br>${t.numero ? 'N° V-' + t.numero : 'N° pendiente (sin señal)'}<br>${f.toLocaleDateString('es-CO')} ${f.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' })}</div><hr>
   ${L('Cliente:', esc(t.cliente ? t.cliente.nombre : 'Consumidor final'))}${t.cliente && t.cliente.doc ? L('Documento:', esc(t.cliente.doc)) : ''}${L('Vendedor:', esc(t.vendedor))}<hr>
   ${t.lineas.map(l => `<div>${esc(l.nombre)}</div>${L(`&nbsp;&nbsp;${l.n} x ${fmt(l.precio)}`, fmt(l.n * l.precio))}`).join('')}<hr>
   ${t.desc ? L('Descuento aplicado:', t.desc + '%') : ''}<div class="tl tot"><span>TOTAL</span><span>${fmt(t.total)}</span></div>
   ${L('Pago:', esc(MEDIO_N[t.medio] || t.medio))}<hr>
-  <div class="c">${t.modalidad === 'factura' ? 'La factura electrónica se enviará<br>a su correo.' : ''}<br><b>Este comprobante no es factura electrónica.</b><br><br>¡Gracias por su compra!</div></div>`;
+  <div class="c">${t.modalidad === 'factura' ? 'La factura electrónica se enviará<br>a su correo.' : ''}<br><b>Este comprobante no es factura electrónica.</b>${(e.mensaje_tirilla ?? '¡Gracias por su compra!') ? '<br><br>' + esc(e.mensaje_tirilla ?? '¡Gracias por su compra!') : ''}</div></div>`;
 }
 function verTicket(id) {
   const t = (C.tk || {})[id]; if (!t) return;
-  const txt = `${BRAND}\nComprobante de venta ${t.numero ? 'V-' + t.numero : '(pendiente)'}\n${new Date(t.fecha).toLocaleString('es-CO')}\nCliente: ${t.cliente ? t.cliente.nombre : 'Consumidor final'}\n` +
+  const txt = `${EMP().razon_social || BRAND}${EMP().nit ? ' · NIT ' + EMP().nit + (EMP().digito_verificacion ? '-' + EMP().digito_verificacion : '') : ''}\nComprobante de venta ${t.numero ? 'V-' + t.numero : '(pendiente)'}\n${new Date(t.fecha).toLocaleString('es-CO')}\nCliente: ${t.cliente ? t.cliente.nombre : 'Consumidor final'}\n` +
     t.lineas.map(l => `${l.n} x ${nice(l.nombre)}: ${fmt(l.n * l.precio)}`).join('\n') + `\nTOTAL: ${fmt(t.total)}\nPago: ${MEDIO_N[t.medio] || t.medio}\n(No es factura electrónica)`;
   sheet(`${ticketHTML(t)}<div class="grid2" style="margin-top:14px"><button class="btn" onclick="imprimir()">🖨️ Imprimir</button><a class="btn sec" style="text-decoration:none" href="https://wa.me/?text=${encodeURIComponent(txt)}" target="_blank" rel="noopener">📲 WhatsApp</a></div>
   <div style="height:10px"></div><button class="btn sec" onclick="closeSheet();${tab === 'contado' ? 'refresh()' : ''}">${tab === 'contado' ? '＋ Nueva venta' : 'Cerrar'}</button>`);
 }
 function imprimir() { try { window.print(); } catch (e) { toast('No se pudo abrir la impresión', true); } }
+const PERIODOS = [['hoy','Hoy'],['ayer','Ayer'],['7d','7 días'],['mes','Este mes'],['mesant','Mes pasado']];
+function rango(p) {
+  const d = new Date(); d.setHours(0, 0, 0, 0); let a = new Date(d), b = new Date(d); b.setDate(b.getDate() + 1);
+  if (p === 'ayer') { a.setDate(a.getDate() - 1); b = new Date(d); }
+  if (p === '7d') a.setDate(a.getDate() - 6);
+  if (p === 'mes') a.setDate(1);
+  if (p === 'mesant') { a = new Date(d.getFullYear(), d.getMonth() - 1, 1); b = new Date(d.getFullYear(), d.getMonth(), 1); }
+  return [a, b];
+}
+// Historial de ventas de contado: el vendedor ve las suyas; administración, gerencia y cartera ven todas y filtran por vendedor
+async function vistaHistorial(cabecera) {
+  sub.hp = sub.hp || 'hoy';
+  const todos = ['administrador','gerencia','cartera'].includes(ROLE), [a, b] = rango(sub.hp);
+  const leer = () => { let x = sb.from('ventas').select('id,numero,fecha,modalidad,medio_pago,estado,vendedor_id,clientes(razon_social,tipo_documento,numero_documento),vendedor:perfiles!ventas_vendedor_id_fkey(nombre),venta_items(producto_id,cantidad,precio_unitario,descuento_pct)')
+    .gte('fecha', a.toISOString()).lt('fecha', b.toISOString()).order('fecha', { ascending: false }).limit(1000);
+    if (!todos) x = x.eq('vendedor_id', ME.id); return q(x); };
+  let sinSenal = false;
+  const vs0 = await cached('dpd_hist_' + sub.hp, leer).catch(e => { if (!esRed(e)) throw e; sinSenal = true; return []; });
+  const vends = [...new Map(vs0.map(v => [v.vendedor_id, (v.vendedor && v.vendedor.nombre) || ''])).entries()];
+  if (sub.hv && !vends.some(([k]) => k === sub.hv)) sub.hv = '';
+  const vs = vs0.filter(v => v.estado !== 'anulada' && (todos || v.vendedor_id === ME.id) && (!sub.hv || v.vendedor_id === sub.hv));
+  const tot = v => (v.venta_items || []).reduce((s, i) => s + i.cantidad * i.precio_unitario, 0);
+  C.tk = { ...(C.tk || {}), ...Object.fromEntries(vs.map(v => [v.id, { ...ticketDeVenta(v), vendedor: (v.vendedor && v.vendedor.nombre) || ME.nombre }])) };
+  const total = vs.reduce((s, v) => s + tot(v), 0);
+  const agrupa = f => { const m = {}; vs.forEach(v => { const k = f(v); m[k] = (m[k] || 0) + tot(v); }); return Object.entries(m).sort((x, y) => y[1] - x[1]); };
+  const porMedio = agrupa(v => MEDIO_N[v.medio_pago] || v.medio_pago), porDia = agrupa(v => new Date(v.fecha).toLocaleDateString('es-CO', { weekday: 'short', day: 'numeric', month: 'short' }));
+  const porVend = todos && !sub.hv ? agrupa(v => (v.vendedor && v.vendedor.nombre) || '—') : [];
+  const fila = ([k, n]) => `<div class="tl" style="display:flex;justify-content:space-between;padding:4px 0"><span>${esc(k)}</span><b>${fmt(n)}</b></div>`;
+  return `${cabecera || ''}<div class="seg">${PERIODOS.map(([k, n]) => `<button class="${sub.hp === k ? 'on' : ''}" onclick="sub.hp='${k}';refresh()">${n}</button>`).join('')}</div>
+  ${todos && vends.length > 1 ? `<select style="margin-top:8px" onchange="sub.hv=this.value;refresh()"><option value="">Todos los vendedores</option>${vends.map(([k, n]) => `<option value="${k}" ${sub.hv === k ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>` : ''}
+  ${sinSenal ? '<div class="note warnnote">📵 Sin señal: este periodo se verá cuando vuelva la señal.</div>' : ''}
+  <div class="hero" style="margin-top:12px"><div style="flex:1"><div class="lbl">Contado · ${PERIODOS.find(p => p[0] === sub.hp)[1].toLowerCase()}</div><div class="val">${fmt(total)}</div><div style="font-size:13px;opacity:.8;font-weight:700">${vs.length} ${vs.length === 1 ? 'venta' : 'ventas'} · ${vs.filter(v => v.modalidad === 'factura' && v.estado === 'registrada').length} por facturar</div></div><div style="font-size:42px">📅</div></div>
+  ${vs.length ? `<div class="card"><b>Por medio de pago</b>${porMedio.map(fila).join('')}</div>
+  ${porVend.length > 1 ? `<div class="card"><b>Por vendedor</b>${porVend.map(fila).join('')}</div>` : ''}
+  ${porDia.length > 1 ? `<div class="card"><b>Por día</b>${porDia.map(fila).join('')}</div>` : ''}` : ''}
+  ${vs.slice(0, 200).map((v, i) => `<div class="card" ${dl(i)}><div class="row"><b>Venta V-${v.numero}</b><span class="badge ${v.modalidad === 'factura' ? 'b-info' : 'b-ok'}">${v.modalidad === 'factura' ? 'Factura' : 'Tirilla'}</span></div>
+   <div class="mut">${fdate(v.fecha)} ${new Date(v.fecha).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' })} · ${esc(v.clientes?.razon_social || 'Consumidor final')}${todos ? ' · ' + esc(v.vendedor?.nombre || '') : ''} · ${esc(MEDIO_N[v.medio_pago] || v.medio_pago)}</div>
+   <div class="row" style="margin-top:8px"><span class="big" style="font-size:20px">${fmt(tot(v))}</span><button class="btn sm sec" onclick="verTicket('${v.id}')">🧾 Ver</button></div></div>`).join('') || (sinSenal ? '' : '<div class="empty"><span class="e">🧾</span>No hay ventas de contado en este periodo</div>')}
+  ${vs.length > 200 ? '<div class="mut">Se muestran las 200 más recientes; los totales incluyen todas.</div>' : ''}`;
+}
 async function vistaVentas() {
-  const vs = await q(sb.from('ventas').select('id,numero,fecha,modalidad,medio_pago,estado,clientes(razon_social),vendedor:perfiles!ventas_vendedor_id_fkey(nombre),venta_items(producto_id,cantidad,precio_unitario)').order('numero', { ascending: false }).limit(80));
-  const tot = v => v.venta_items.reduce((a, i) => a + i.cantidad * i.precio_unitario, 0), hoy = new Date().toDateString();
-  const vh = vs.filter(v => new Date(v.fecha).toDateString() === hoy);
-  return `<div class="row"><h2>Pedidos</h2><button class="btn sm sec" onclick="refresh()">↻</button></div>
-  <div class="seg">${[['enviado','Por aprobar'],['proceso','En proceso'],['todos','Todos'],['ventas','Contado']].map(([k, n]) => `<button class="${sub.ap === k ? 'on' : ''}" onclick="sub.ap='${k}';refresh()">${n}</button>`).join('')}</div>
-  <div class="grid2"><div class="kpi" style="background:linear-gradient(135deg,#3C7A2C,#6BAE4C)"><div class="k">Contado hoy</div><div class="v">${fmt(vh.reduce((a, v) => a + tot(v), 0))}</div><span class="ke">💵</span></div>
-  <div class="kpi" style="background:linear-gradient(135deg,#2F6EA5,#4C9AD6)"><div class="k">Por facturar</div><div class="v">${vs.filter(v => v.modalidad === 'factura' && v.estado === 'registrada').length}</div><span class="ke">📄</span></div></div>
-  <div style="height:12px"></div>${vs.map((v, i) => `<div class="card" ${dl(i)}><div class="row"><b class="serif" style="font-size:17px">Venta V-${v.numero}</b><span class="badge ${v.modalidad === 'factura' ? 'b-info' : 'b-ok'}">${v.modalidad === 'factura' ? (v.estado === 'facturada' ? 'Facturada' : 'Por facturar') : 'Tirilla'}</span></div>
-   <div class="mut">${fdate(v.fecha)} ${new Date(v.fecha).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' })} · ${esc(v.clientes?.razon_social || 'Consumidor final')} · ${esc(v.vendedor?.nombre || '')} · ${esc(MEDIO_N[v.medio_pago] || v.medio_pago || '')}</div>
-   ${thumbs({ pedido_items: v.venta_items })}<div class="big" style="font-size:20px;margin-top:6px">${fmt(tot(v))}</div></div>`).join('') || '<div class="empty"><span class="e">💵</span>Aún no hay ventas de contado</div>'}`;
+  return vistaHistorial(`<div class="row"><h2>Pedidos</h2><button class="btn sm sec" onclick="refresh()">↻</button></div>
+  <div class="seg">${[['enviado','Por aprobar'],['proceso','En proceso'],['todos','Todos'],['ventas','Contado']].map(([k, n]) => `<button class="${sub.ap === k ? 'on' : ''}" onclick="sub.ap='${k}';refresh()">${n}</button>`).join('')}</div><h3>Ventas de contado</h3>`);
 }
 // service worker: la app abre aunque no haya señal
 if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
